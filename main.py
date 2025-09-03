@@ -103,7 +103,7 @@ def create_html_card(timestamp, service, number, country_flag, country_name, otp
         f"<u>Number</u>: {esc(masked_number)}  {esc(country_flag)} {esc(country_name)}\n"
         f"<u>Code</u>: {otp_html}\n\n"
         f"<b>Message</b>:\n<tg-spoiler>{esc(full_msg)}</tg-spoiler>\n\n"
-        f"<i>— Powerby Incognito • Good Luck</i>"
+        f"<i>—PowerBy Incognito • Good Luck :)</i>"
     )
 
 def guess_columns(headers):
@@ -144,7 +144,7 @@ def login(driver):
         if match:
             math_expr = match.group(1).strip()
             try:
-                answer = eval(math_expr)  # Compute the answer (e.g., 7 + 3 = 10)
+                answer = eval(math_expr)  # Compute the answer (e.g., 1 + 7 = 8)
                 print(f"[INFO] Computed CAPTCHA answer: {answer}")
             except Exception as e:
                 print(f"[ERROR] Failed to compute math '{math_expr}': {e}")
@@ -161,17 +161,25 @@ def login(driver):
         
         # Submit button
         submit_button = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, config.SUBMIT_SELECTOR)))
-        submit_button.click()
+        driver.execute_script("arguments[0].click();", submit_button)  # Force click via JavaScript
         print("[INFO] Submit button clicked")
         
-        time.sleep(3)  # Wait for login to complete
+        # Wait for login to complete (increased to 5 seconds)
+        time.sleep(5)
+        
+        # Check if login succeeded by looking for a success indicator or URL change
         if driver.current_url == config.LOGIN_URL:
             print("[ERROR] Login likely failed; URL did not change")
+            # Try to detect an error message on the page
+            error_element = driver.find_elements(By.CSS_SELECTOR, ".error-message, .alert-danger")
+            if error_element:
+                print(f"[ERROR] Login failed: {error_element[0].text}")
             return False
+        
         print("[INFO] Login successful")
         return True
     except WebDriverException as e:
-        print(f"[ERROR] Login failed: {e}")
+        print(f"[ERROR] Login failed: {str(e)}")
         return False
 
 def scrape_once(driver):
