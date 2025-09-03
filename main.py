@@ -107,7 +107,7 @@ def create_html_card(timestamp: datetime, service: str, number: str, country_fla
         f"<u>Number</u>: {esc(masked_number)}  {esc(country_flag)} {esc(country_name)}\n"
         f"<u>Code</u>: {otp_html}\n\n"
         f"<b>Message</b>:\n<tg-spoiler>{esc(full_msg)}</tg-spoiler>\n\n"
-        f"<i>— bot by @your_handle • anti-dup✓ • headless✓ • docker✓</i>"
+        f"<i>— Powerby Incognito • anti-dup✓ • headless✓ • docker✓</i>"
     )
 
 def guess_columns(headers):
