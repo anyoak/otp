@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -103,7 +104,7 @@ def create_html_card(timestamp, service, number, country_flag, country_name, otp
         f"<u>Number</u>: {esc(masked_number)}  {esc(country_flag)} {esc(country_name)}\n"
         f"<u>Code</u>: {otp_html}\n\n"
         f"<b>Message</b>:\n<tg-spoiler>{esc(full_msg)}</tg-spoiler>\n\n"
-        f"<i>— PowerBy Incognito • Good Luck✓</i>"
+        f"<i>— PowerBy Incognito | Good Luck</i>"
     )
 
 def guess_columns(headers):
@@ -231,9 +232,9 @@ if __name__ == "__main__":
     options.add_argument("--disable-gpu")
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36")
     
-    # Specify Chromium binary and ChromeDriver paths for Docker
-    options.binary_location = '/usr/bin/chromium-browser'
-    driver = webdriver.Chrome(executable_path='/usr/bin/chromedriver', options=options)
+    # Use Service class for ChromeDriver
+    service = Service('/usr/bin/chromedriver')
+    driver = webdriver.Chrome(service=service, options=options)
     
     try:
         # Attempt automatic login
