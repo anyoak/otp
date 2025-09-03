@@ -5,11 +5,10 @@ from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import WebDriverException, NoSuchElementException
+from selenium.common.exceptions import WebDriverException, NoSuchElementException, TimeoutException
 import phonenumbers
 from phonenumbers import geocoder
 
@@ -104,7 +103,7 @@ def create_html_card(timestamp, service, number, country_flag, country_name, otp
         f"<u>Number</u>: {esc(masked_number)}  {esc(country_flag)} {esc(country_name)}\n"
         f"<u>Code</u>: {otp_html}\n\n"
         f"<b>Message</b>:\n<tg-spoiler>{esc(full_msg)}</tg-spoiler>\n\n"
-        f"<i>— PowerBy Incognito | Good Luck</i>"
+        f"<i>— bot by @your_handle • anti-dup✓ • headless✓ • docker✓</i>"
     )
 
 def guess_columns(headers):
@@ -122,7 +121,7 @@ def guess_columns(headers):
 def login(driver):
     try:
         driver.get(config.LOGIN_URL)
-        wait = WebDriverWait(driver, 20)  # Increased to 20 seconds
+        wait = WebDriverWait(driver, 25)  # Increased to 25 seconds
         
         # Username field
         username_field = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, config.USERNAME_SELECTOR)))
@@ -145,8 +144,12 @@ def login(driver):
         if match:
             math_expr = match.group(1).strip()
             try:
-                answer = eval(math_expr)  # Compute the answer (e.g., 3 + 1 = 4)
+                answer = eval(math_expr)  # Compute the answer (e.g., 8 + 2 = 10)
                 print(f"[INFO] Computed CAPTCHA answer: {answer}")
+                captcha_field = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, config.CAPTCHA_SELECTOR)))
+                captcha_field.clear()
+                captcha_field.send_keys(str(answer))
+                print("[INFO] CAPTCHA answer entered")
             except Exception as e:
                 print(f"[ERROR] Failed to compute math '{math_expr}': {e}")
                 return False
@@ -154,36 +157,36 @@ def login(driver):
             print("[ERROR] Could not parse CAPTCHA question")
             return False
         
-        # Enter CAPTCHA answer
-        captcha_field = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, config.CAPTCHA_SELECTOR)))
-        captcha_field.clear()
-        captcha_field.send_keys(str(answer))
-        print("[INFO] CAPTCHA answer entered")
-        
         # Submit button
         submit_button = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, config.SUBMIT_SELECTOR)))
         driver.execute_script("arguments[0].click();", submit_button)  # Force click via JavaScript
         print("[INFO] Submit button clicked")
         
-        # Wait for page to load or redirect
-        wait.until(EC.url_changes(config.LOGIN_URL))  # Wait for URL to change
-        time.sleep(5)  # Additional buffer
+        # Wait for page to load or redirect with increased timeout
+        try:
+            wait.until(EC.url_changes(config.LOGIN_URL), timeout=20)
+            time.sleep(5)  # Additional buffer
+        except TimeoutException:
+            print("[WARNING] URL did not change within 20 seconds, checking page state...")
         
         # Check if login succeeded
         if driver.current_url == config.LOGIN_URL:
             print("[ERROR] Login likely failed; URL did not change")
             # Try to detect an error message on the page
-            error_element = driver.find_elements(By.CSS_SELECTOR, ".error-message, .alert-danger, .login-error")
+            error_element = driver.find_elements(By.CSS_SELECTOR, ".error-message, .alert-danger, .login-error, .error")
             if error_element:
                 print(f"[ERROR] Login failed: {error_element[0].text}")
             else:
-                print("[DEBUG] Page source snippet:", driver.page_source[:500])  # Debug page state
+                print("[DEBUG] Page source snippet:", driver.page_source[:1000])  # Increased to 1000 chars
             return False
         
         print("[INFO] Login successful")
         return True
     except WebDriverException as e:
         print(f"[ERROR] Login failed: {str(e)}")
+        return False
+    except Exception as e:
+        print(f"[ERROR] Unexpected error during login: {str(e)}")
         return False
 
 def scrape_once(driver):
@@ -232,22 +235,22 @@ if __name__ == "__main__":
     options.add_argument("--disable-gpu")
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36")
     
-    # Use Service class for ChromeDriver
-    service = Service('/usr/bin/chromedriver')
-    driver = webdriver.Chrome(service=service, options=options)
+    # Specify Chromium binary and ChromeDriver paths for Docker
+    options.binary_location = '/usr/bin/chromium-browser'
+    service = webdriver.Chrome(service=Service('/usr/bin/chromedriver'), options=options)
     
     try:
         # Attempt automatic login
-        if not login(driver):
+        if not login(service):
             print("[ERROR] Login failed, exiting")
             exit(1)
         
         # Proceed to SMS page and start scraping
         print("[INFO] Proceeding to SMS page...")
         while True:
-            scrape_once(driver)
+            scrape_once(service)
             time.sleep(config.SCRAPE_INTERVAL)
     except KeyboardInterrupt:
         print("Shutting down...")
     finally:
-        driver.quit()
+        service.quit()
