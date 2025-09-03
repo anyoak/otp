@@ -1,18 +1,14 @@
-FROM python:3.11-slim
+FROM python:3.10-alpine
 
-WORKDIR /app
+# Install Chromium and ChromeDriver
+RUN apk update && apk add --no-cache chromium chromium-chromedriver
 
-RUN apt-get update && apt-get install -y \
-    chromium \
-    chromium-driver \
-    && rm -rf /var/lib/apt/lists/*
-
+# Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy your code
 COPY . .
 
-ENV CHROME_BINARY=/usr/bin/chromium
-ENV CHROMEDRIVER_PATH=/usr/bin/chromedriver
-
+# Start command
 CMD ["python", "main.py"]
