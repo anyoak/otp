@@ -103,7 +103,7 @@ def create_html_card(timestamp, service, number, country_flag, country_name, otp
         f"<u>Number</u>: {esc(masked_number)}  {esc(country_flag)} {esc(country_name)}\n"
         f"<u>Code</u>: {otp_html}\n\n"
         f"<b>Message</b>:\n<tg-spoiler>{esc(full_msg)}</tg-spoiler>\n\n"
-        f"<i>—PowerBy Incognito • Good Luck :)</i>"
+        f"<i>— PowerBy Imcognito • Good Luck</i>"
     )
 
 def guess_columns(headers):
@@ -121,7 +121,7 @@ def guess_columns(headers):
 def login(driver):
     try:
         driver.get(config.LOGIN_URL)
-        wait = WebDriverWait(driver, 10)
+        wait = WebDriverWait(driver, 15)  # Increased to 15 seconds
         
         # Username field
         username_field = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, config.USERNAME_SELECTOR)))
@@ -144,7 +144,7 @@ def login(driver):
         if match:
             math_expr = match.group(1).strip()
             try:
-                answer = eval(math_expr)  # Compute the answer (e.g., 1 + 7 = 8)
+                answer = eval(math_expr)  # Compute the answer (e.g., 3 + 1 = 4)
                 print(f"[INFO] Computed CAPTCHA answer: {answer}")
             except Exception as e:
                 print(f"[ERROR] Failed to compute math '{math_expr}': {e}")
@@ -164,16 +164,19 @@ def login(driver):
         driver.execute_script("arguments[0].click();", submit_button)  # Force click via JavaScript
         print("[INFO] Submit button clicked")
         
-        # Wait for login to complete (increased to 5 seconds)
-        time.sleep(5)
+        # Wait for page to load or redirect
+        wait.until(EC.url_changes(config.LOGIN_URL))  # Wait for URL to change
+        time.sleep(5)  # Additional buffer
         
-        # Check if login succeeded by looking for a success indicator or URL change
+        # Check if login succeeded
         if driver.current_url == config.LOGIN_URL:
             print("[ERROR] Login likely failed; URL did not change")
             # Try to detect an error message on the page
-            error_element = driver.find_elements(By.CSS_SELECTOR, ".error-message, .alert-danger")
+            error_element = driver.find_elements(By.CSS_SELECTOR, ".error-message, .alert-danger, .login-error")
             if error_element:
                 print(f"[ERROR] Login failed: {error_element[0].text}")
+            else:
+                print("[DEBUG] Page source snippet:", driver.page_source[:500])  # Debug page state
             return False
         
         print("[INFO] Login successful")
