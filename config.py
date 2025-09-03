@@ -1,21 +1,25 @@
-from dotenv import load_dotenv
 import os
 
-load_dotenv()  # For local testing; on Render, env vars are set directly
+# ==== Telegram ====
+BOT_TOKEN = os.getenv('BOT_TOKEN', 'your_bot_token_here')  # Fetch from environment, default placeholder
+CHAT_ID = os.getenv('CHAT_ID', 'your_chat_id_here')       # Fetch from environment, default placeholder
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+# ==== Target site ====
+LOGIN_URL = os.getenv('LOGIN_URL', 'http://94.23.120.156/ints/login')
+SMS_URL = os.getenv('SMS_URL', 'http://94.23.120.156/ints/client/SMSCDRStats')
 
-SMS_URL = os.getenv("SMS_URL")
-LOGIN_URL = os.getenv("LOGIN_URL")
+# Login credentials
+SITE_USERNAME = os.getenv('SITE_USERNAME', 'your_username_here')  # Fetch from environment, default placeholder
+SITE_PASSWORD = os.getenv('SITE_PASSWORD', 'your_password_here')  # Fetch from environment, default placeholder
 
-SITE_USERNAME = os.getenv("SITE_USERNAME")
-SITE_PASSWORD = os.getenv("SITE_PASSWORD")
+# CSS selectors for the login form
+USERNAME_SELECTOR = os.getenv('USERNAME_SELECTOR', 'input[type="text"]:nth-of-type(1)')
+PASSWORD_SELECTOR = os.getenv('PASSWORD_SELECTOR', 'input[type="password"]')
+CAPTCHA_SELECTOR = os.getenv('CAPTCHA_SELECTOR', 'input[type="text"]:nth-of-type(2)')
+SUBMIT_SELECTOR = os.getenv('SUBMIT_SELECTOR', 'button')
 
-USERNAME_SELECTOR = os.getenv("USERNAME_SELECTOR")
-PASSWORD_SELECTOR = os.getenv("PASSWORD_SELECTOR")
-SUBMIT_SELECTOR = os.getenv("SUBMIT_SELECTOR")
+# Scrape interval (seconds)
+SCRAPE_INTERVAL = int(os.getenv('SCRAPE_INTERVAL', '6'))  # Convert to int, default 6 seconds
 
-SCRAPE_INTERVAL = int(os.getenv("SCRAPE_INTERVAL", 60))
-
-TZ_OFFSET_HOURS = int(os.getenv("TZ_OFFSET_HOURS", 0))
+# Timezone offset (hours) for Dhaka (+6)
+TZ_OFFSET_HOURS = int(os.getenv('TZ_OFFSET_HOURS', '6'))  # Convert to int, default 6 hours
