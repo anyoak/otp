@@ -1,5 +1,4 @@
-beautifulsoup4==4.12.3
-selenium==4.25.0
-phonenumbers==8.13.47
-python-telegram-bot==20.7
-python-dotenv==1.0.1
+selenium
+beautifulsoup4
+phonenumbers
+python-telegram-bot
