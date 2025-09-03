@@ -8,7 +8,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.service import Service  # Added import for Service
+from selenium.webdriver.chrome.service import Service
 from selenium.common.exceptions import WebDriverException, NoSuchElementException, TimeoutException
 import phonenumbers
 from phonenumbers import geocoder
@@ -145,12 +145,18 @@ def login(driver):
         if match:
             math_expr = match.group(1).strip()
             try:
-                answer = eval(math_expr)  # Compute the answer (e.g., 8 + 2 = 10)
-                print(f"[INFO] Computed CAPTCHA answer: {answer}")
-                captcha_field = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, config.CAPTCHA_SELECTOR)))
-                captcha_field.clear()
-                captcha_field.send_keys(str(answer))
-                print("[INFO] CAPTCHA answer entered")
+                # Custom parsing instead of eval for simple addition
+                parts = re.findall(r'\d+', math_expr)
+                if len(parts) == 2:
+                    answer = int(parts[0]) + int(parts[1])
+                    print(f"[INFO] Computed CAPTCHA answer: {answer}")
+                    captcha_field = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, config.CAPTCHA_SELECTOR)))
+                    captcha_field.clear()
+                    captcha_field.send_keys(str(answer))
+                    print("[INFO] CAPTCHA answer entered")
+                else:
+                    print("[ERROR] Invalid math expression format")
+                    return False
             except Exception as e:
                 print(f"[ERROR] Failed to compute math '{math_expr}': {e}")
                 return False
