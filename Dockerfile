@@ -1,7 +1,7 @@
-# Use official Python 3.10 slim image
-FROM python:3.10-slim
+# Use official Python 3.10 Debian-based image
+FROM python:3.10
 
-# Install dependencies
+# Install Chromium and dependencies
 RUN apt-get update && apt-get install -y \
     chromium \
     chromium-driver \
@@ -10,7 +10,6 @@ RUN apt-get update && apt-get install -y \
     unzip \
     fonts-liberation \
     libnss3 \
-    libgconf-2-4 \
     libxss1 \
     libasound2 \
     libatk1.0-0 \
@@ -27,7 +26,7 @@ RUN apt-get update && apt-get install -y \
     xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Set environment variables for headless Chrome
+# Environment variables for headless Chrome
 ENV CHROME_BIN=/usr/bin/chromium
 ENV CHROME_DRIVER=/usr/bin/chromedriver
 ENV DISPLAY=:99
@@ -35,14 +34,12 @@ ENV DISPLAY=:99
 # Set working directory
 WORKDIR /app
 
-# Copy Python requirements
+# Copy requirements and install
 COPY requirements.txt .
-
-# Install Python packages
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy your code
+# Copy app code
 COPY . .
 
-# Run the main script
+# Run main script
 CMD ["python", "main.py"]
