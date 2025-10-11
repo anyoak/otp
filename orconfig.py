@@ -1,12 +1,12 @@
 # Telegram Bot Configuration
 BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # Get from @BotFather
-CHAT_ID = "YOUR_CHAT_ID_HERE"      # Your Telegram chat ID
+CHAT_ID = "-1002631004312"      # Your Telegram chat ID
 
 # Website Configuration
 CALL_URL = "https://www.orangecarrier.com/live/calls"  # Active Calls page URL
 
 # OpenAI API Configuration
-OPENAI_API_KEY = "YOUR_OPENAI_API_KEY_HERE"  # For voice transcription
+OPENAI_API_KEY = "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"  # For voice transcription
 
 # Optional: Additional Settings
 LOGIN_URL = "https://www.orangecarrier.com/login"
