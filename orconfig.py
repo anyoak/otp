@@ -1,5 +1,5 @@
 # Telegram Bot Configuration
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # Get from @BotFather
+BOT_TOKEN = "8461039358:AAHAP7WWhDvvqsOnuidSAj4X6l9zXw5G4zM"  # Get from @BotFather
 CHAT_ID = "-1002631004312"      # Your Telegram chat ID
 
 # Website Configuration
