@@ -266,7 +266,7 @@ def process_completed_call(driver, call_id):
             duration_str = f"{call_duration.seconds // 60}:{call_duration.seconds % 60:02d}"
             
             caption = (
-                f"🎧 **Call Recording Received!**\n\n"
+                f"🎧 **Call Recording Captured!**\n\n"
                 f"🌍 **Country:** {call_info['country']} {call_info['flag']}\n"
                 f"📞 **DID Number:** `{call_info['masked']}`\n"
                 f"🔐 **Detected OTP:** `{otp_code}`\n"
