@@ -9,15 +9,15 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, StaleElementReferenceException
+from selenium.webdriver.common.action_chains import ActionChains
 import phonenumbers
 from phonenumbers import region_code_for_number
 import pycountry
-from openai import OpenAI
 import config
 
 # ---------------- Global Variables ---------------- #
 active_calls = {}
-client = OpenAI(api_key=config.OPENAI_API_KEY)
+processed_recordings = set()
 
 # Create downloads directory if it doesn't exist
 os.makedirs(config.DOWNLOAD_FOLDER, exist_ok=True)
@@ -50,23 +50,6 @@ def mask_number(number: str) -> str:
         return digits[:4] + "****" + digits[-3:]
     return number
 
-def extract_otp(text: str) -> str:
-    """Extract OTP codes from text"""
-    patterns = [
-        r'\b\d{4,6}\b',
-        r'code[\s:]*(\d{4,6})',
-        r'password[\s:]*(\d{4,6})',
-        r'verification[\s:]*(\d{4,6})',
-        r'otp[\s:]*(\d{4,6})',
-        r'pin[\s:]*(\d{4,6})'
-    ]
-    
-    for pattern in patterns:
-        matches = re.findall(pattern, text, re.IGNORECASE)
-        if matches:
-            return matches[0]
-    return "N/A"
-
 def send_message(text: str):
     """Send message to Telegram"""
     try:
@@ -79,14 +62,6 @@ def send_message(text: str):
         print(f"[❌] Failed to send message: {e}")
     return None
 
-def delete_message(msg_id):
-    """Delete Telegram message"""
-    try:
-        url = f"https://api.telegram.org/bot{config.BOT_TOKEN}/deleteMessage"
-        requests.post(url, data={"chat_id": config.CHAT_ID, "message_id": msg_id}, timeout=5)
-    except Exception as e:
-        print(f"[❌] Failed to delete message: {e}")
-
 def send_voice_with_caption(voice_path, caption):
     """Send voice recording with caption to Telegram"""
     try:
@@ -97,25 +72,13 @@ def send_voice_with_caption(voice_path, caption):
             response = requests.post(url, data=payload, files=files, timeout=60)
             if response.status_code == 200:
                 print(f"[✅] Voice message sent successfully")
+                return True
             else:
                 print(f"[❌] Failed to send voice: {response.status_code}")
+                return False
     except Exception as e:
         print(f"[❌] Failed to send voice: {e}")
-
-def transcribe_voice(file_path):
-    """Transcribe voice recording using OpenAI"""
-    try:
-        with open(file_path, "rb") as audio:
-            result = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio,
-                response_format="text",
-                language="en"
-            )
-        return result.strip()
-    except Exception as e:
-        print(f"[❌] Transcription failed: {e}")
-        return ""
+        return False
 
 def get_authenticated_session(driver):
     """Create requests session with Selenium cookies"""
@@ -127,10 +90,93 @@ def get_authenticated_session(driver):
     
     return session
 
+def click_play_button(driver, row):
+    """Click the Play button for a specific call row"""
+    try:
+        # Find the Play button in the row (last cell)
+        cells = row.find_elements(By.TAG_NAME, "td")
+        if len(cells) >= 6:  # Check if there's a button cell
+            play_button = cells[5].find_element(By.TAG_NAME, "button")
+            if "Play" in play_button.text:
+                # Scroll to the button
+                driver.execute_script("arguments[0].scrollIntoView(true);", play_button)
+                time.sleep(1)
+                
+                # Click using JavaScript to avoid interception
+                driver.execute_script("arguments[0].click();", play_button)
+                print("[▶️] Play button clicked")
+                return True
+    except Exception as e:
+        print(f"[❌] Failed to click play button: {e}")
+    return False
+
+def download_recording_from_play(driver, call_id, did_number):
+    """Download recording after clicking Play button"""
+    try:
+        # Wait for audio element to appear after clicking play
+        print("[🎵] Waiting for audio player to load...")
+        time.sleep(3)
+        
+        # Look for audio elements in the page
+        audio_elements = driver.find_elements(By.TAG_NAME, "audio")
+        audio_sources = driver.find_elements(By.CSS_SELECTOR, "audio source")
+        
+        recording_url = None
+        
+        # Check audio elements for src attribute
+        for audio in audio_elements:
+            src = audio.get_attribute("src")
+            if src and "live/calls/sound" in src:
+                recording_url = src
+                break
+        
+        # Check source elements
+        if not recording_url:
+            for source in audio_sources:
+                src = source.get_attribute("src")
+                if src and "live/calls/sound" in src:
+                    recording_url = src
+                    break
+        
+        # If no audio element found, construct URL manually
+        if not recording_url:
+            recording_url = f"https://www.orangecarrier.com/live/calls/sound?did={did_number}&uuid={call_id}"
+            print(f"[🔗] Using constructed URL: {recording_url}")
+        else:
+            print(f"[🔗] Found audio URL: {recording_url}")
+        
+        # Download the recording
+        if recording_url:
+            session = get_authenticated_session(driver)
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Referer': config.CALL_URL,
+                'Accept': 'audio/mpeg, audio/*'
+            }
+            
+            response = session.get(recording_url, headers=headers, timeout=60)
+            
+            if response.status_code == 200 and len(response.content) > 1000:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                file_path = os.path.join(config.DOWNLOAD_FOLDER, f"call_{did_number}_{timestamp}.mp3")
+                
+                with open(file_path, "wb") as f:
+                    f.write(response.content)
+                
+                print(f"[✅] Recording downloaded: {file_path} ({len(response.content)} bytes)")
+                return file_path
+            else:
+                print(f"[❌] Download failed: HTTP {response.status_code}, Size: {len(response.content)}")
+        
+    except Exception as e:
+        print(f"[❌] Error downloading from play: {e}")
+    
+    return None
+
 # ---------------- Call Detection Functions ---------------- #
 def extract_calls(driver):
     """Extract and process active calls from the website"""
-    global active_calls
+    global active_calls, processed_recordings
     
     try:
         # Wait for the active calls table
@@ -171,12 +217,11 @@ def extract_calls(driver):
                     masked = mask_number(did_number)
                     
                     alert_text = (
-                        f"📞 **New Call Alert!**\n"
-                        f"🔗 **Location:** {country_name} {flag}\n"
-                        f"✨ **DID Number:** `{masked}`\n"
-                        f"📋 **Original:** `{did_text}`\n\n"
-                        f"☎️ **Your call is currently being recorded...**\n"
-                        f"⏳ Please wait — the recording will be sent once ready."
+                        f"📞 **নতুন কল ডিটেক্টেড!**\n"
+                        f"🌍 **দেশ:** {country_name} {flag}\n"
+                        f"📱 **নম্বর:** `{masked}`\n"
+                        f"⏰ **সময়:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                        f"🎙️ **কল রেকর্ডিং শুরু হয়েছে...**"
                     )
                     
                     msg_id = send_message(alert_text)
@@ -189,11 +234,43 @@ def extract_calls(driver):
                         "original_text": did_text,
                         "detected_at": datetime.now(),
                         "status": "active",
-                        "last_seen": datetime.now()
+                        "last_seen": datetime.now(),
+                        "play_attempted": False
                     }
                 else:
                     # Update last seen time for existing call
                     active_calls[row_id]["last_seen"] = datetime.now()
+                    
+                    # If call is active and we haven't tried to play it yet, try to get recording
+                    if (active_calls[row_id]["status"] == "active" and 
+                        not active_calls[row_id]["play_attempted"] and
+                        row_id not in processed_recordings):
+                        
+                        # Wait a bit for the call to establish
+                        call_duration = datetime.now() - active_calls[row_id]["detected_at"]
+                        if call_duration.total_seconds() > 10:  # Wait at least 10 seconds
+                            print(f"[🎵] Attempting to get recording for call: {did_number}")
+                            
+                            # Try to click Play button and download recording
+                            if click_play_button(driver, row):
+                                time.sleep(2)  # Wait for player to load
+                                file_path = download_recording_from_play(driver, row_id, did_number)
+                                
+                                if file_path:
+                                    # Send recording to Telegram
+                                    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                    caption = (
+                                        f"📞 **কল রেকর্ডিং**\n"
+                                        f"🌍 **দেশ:** {active_calls[row_id]['country']} {active_calls[row_id]['flag']}\n"
+                                        f"📱 **নম্বর:** `{active_calls[row_id]['masked']}`\n"
+                                        f"⏰ **সময়:** {current_time}"
+                                    )
+                                    
+                                    if send_voice_with_caption(file_path, caption):
+                                        processed_recordings.add(row_id)
+                                        print(f"[✅] Recording sent successfully: {did_number}")
+                                
+                                active_calls[row_id]["play_attempted"] = True
                     
             except StaleElementReferenceException:
                 print("[⚠️] Stale element, skipping row")
@@ -207,15 +284,22 @@ def extract_calls(driver):
         completed_calls = []
         
         for call_id, call_info in list(active_calls.items()):
-            # If call ID not in current rows OR last seen more than 30 seconds ago
+            # If call ID not in current rows OR last seen more than 60 seconds ago
             if (call_id not in current_call_ids) or \
-               ((current_time - call_info["last_seen"]).total_seconds() > 30):
+               ((current_time - call_info["last_seen"]).total_seconds() > 60):
                 print(f"[✅] Call completed: {call_info['did_number']}")
                 completed_calls.append(call_id)
         
-        # Process completed calls
+        # Process completed calls - try one final download attempt
         for call_id in completed_calls:
-            process_completed_call(driver, call_id)
+            if call_id not in processed_recordings:
+                print(f"[🔄] Final attempt to download recording for: {active_calls[call_id]['did_number']}")
+                # Try direct download for completed calls
+                process_completed_call(driver, call_id)
+            else:
+                # Already processed, just clean up
+                if call_id in active_calls:
+                    del active_calls[call_id]
                 
     except TimeoutException:
         print("[⏱️] Active calls table not found, waiting...")
@@ -223,18 +307,15 @@ def extract_calls(driver):
         print(f"[❌] Extract calls failed: {e}")
 
 def process_completed_call(driver, call_id):
-    """Process a completed call and download recording"""
+    """Process a completed call and try to download recording"""
     call_info = active_calls[call_id]
     
     try:
-        # Construct recording URL based on website JavaScript
+        # Try direct download first
         recording_url = f"https://www.orangecarrier.com/live/calls/sound?did={call_info['did_number']}&uuid={call_id}"
-        print(f"[⬇️] Downloading recording from: {recording_url}")
+        print(f"[⬇️] Attempting direct download: {recording_url}")
         
-        # Get authenticated session
         session = get_authenticated_session(driver)
-        
-        # Download recording
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             'Referer': config.CALL_URL,
@@ -243,43 +324,30 @@ def process_completed_call(driver, call_id):
         
         response = session.get(recording_url, headers=headers, timeout=60)
         
-        if response.status_code == 200 and len(response.content) > 1000:  # Basic validation
+        if response.status_code == 200 and len(response.content) > 1000:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             file_path = os.path.join(config.DOWNLOAD_FOLDER, f"call_{call_info['did_number']}_{timestamp}.mp3")
             
             with open(file_path, "wb") as f:
                 f.write(response.content)
             
-            print(f"[✅] Recording saved: {file_path} ({len(response.content)} bytes)")
+            print(f"[✅] Direct download successful: {file_path}")
             
-            # Transcribe and process
-            print("[🎙️] Transcribing recording...")
-            text = transcribe_voice(file_path)
-            otp_code = extract_otp(text)
-            
-            # Delete initial alert
-            if call_info["msg_id"]:
-                delete_message(call_info["msg_id"])
-            
-            # Send final report
-            call_duration = datetime.now() - call_info['detected_at']
-            duration_str = f"{call_duration.seconds // 60}:{call_duration.seconds % 60:02d}"
-            
+            # Send to Telegram
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             caption = (
-                f"🎧 **Call Recording Captured!**\n\n"
-                f"🌍 **Country:** {call_info['country']} {call_info['flag']}\n"
-                f"📞 **DID Number:** `{call_info['masked']}`\n"
-                f"🔐 **Detected OTP:** `{otp_code}`\n"
-                f"⏰ **Call Duration:** {duration_str}\n\n"
-                f"🗣️ **Transcribed Text:**\n"
-                f"```{text if text else 'No speech detected'}```"
+                f"📞 **কল রেকর্ডিং**\n"
+                f"🌍 **দেশ:** {call_info['country']} {call_info['flag']}\n"
+                f"📱 **নম্বর:** `{call_info['masked']}`\n"
+                f"⏰ **সময়:** {current_time}"
             )
             
-            send_voice_with_caption(file_path, caption)
-            print(f"[✅] Call processing completed: {call_info['did_number']}")
-            
+            if send_voice_with_caption(file_path, caption):
+                processed_recordings.add(call_id)
+                print(f"[✅] Recording sent via direct download: {call_info['did_number']}")
+        
         else:
-            print(f"[❌] Failed to download recording: HTTP {response.status_code}, Size: {len(response.content)}")
+            print(f"[❌] Direct download failed: HTTP {response.status_code}")
             
     except Exception as e:
         print(f"[❌] Failed to process completed call: {e}")
@@ -318,11 +386,18 @@ def initialize_driver():
     chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-logging"])
     
-    # Optional: Run in headless mode (uncomment for production)
-    # chrome_options.add_argument("--headless")
+    # Important: Enable automatic downloads and set download directory
+    prefs = {
+        "download.default_directory": os.path.abspath(config.DOWNLOAD_FOLDER),
+        "download.prompt_for_download": False,
+        "download.directory_upgrade": True,
+        "safebrowsing.enabled": True,
+        "profile.default_content_setting_values.automatic_downloads": 1
+    }
+    chrome_options.add_experimental_option("prefs", prefs)
     
-    # Optional: Set window size
-    chrome_options.add_argument("--window-size=1200,800")
+    # For debugging, run in non-headless mode
+    # chrome_options.add_argument("--headless")  # Remove this line for debugging
     
     return webdriver.Chrome(options=chrome_options)
 
