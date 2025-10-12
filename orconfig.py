@@ -1,5 +1,5 @@
 # Telegram Bot Configuration
-BOT_TOKEN = "8461039358:AAHAP7WWhDvvqsOnuidSAj4X6l9zXw5G4zM"
+BOT_TOKEN = "8017122718:AAFMcOTOtQQr0_uHXDlBQI9EE_PYwp84k-A"
 CHAT_ID = "-1002631004312"
 
 # Website Configuration
