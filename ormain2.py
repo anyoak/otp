@@ -215,9 +215,10 @@ def extract_calls(driver):
             wait_text = f"""✅ **CALL SESSION ENDED**
 
 📊 **Call Summary**
-📍 **Location**: {call_info['country']} {call_info['flag']}
+
+🔗 **Location**: {call_info['country']} {call_info['flag']}
 📞 **Number**: `{call_info['masked']}`
-⏱️ **Duration**: Recording...
+🚀 **Duration**: Recording...
 
 🔄 *Processing audio file...*"""
             
@@ -294,14 +295,16 @@ def process_recording_file(call_info, file_path):
         call_duration = call_info["completed_at"] - call_info["detected_at"]
         duration_str = f"{call_duration.seconds // 60}:{call_duration.seconds % 60:02d}"
         
-        caption = f"""🎧 **CALL RECORDING**
+        caption = f"""🎧 **LISTEN YOUR CALL**
 
-📍 **Geolocation**: {call_info['country']} {call_info['flag']}
+🔗 **Geolocation**: {call_info['country']} {call_info['flag']}
 📞 **Caller ID**: `{call_info['masked']}`
 ⏱️ **Call Duration**: {duration_str}
-🕒 **Timestamp**: {call_info['detected_at'].strftime('%Y-%m-%d %H:%M:%S')}
 
-✅ *Recording successfully captured*"""
+
+🚀 **Timestamp**: {call_info['detected_at'].strftime('%Y-%m-%d %H:%M:%S')}
+
+✨ *Recording successfully captured*"""
         
         if send_voice_with_caption(file_path, caption):
             print(f"[✅] Recording sent: {call_info['did_number']}")
