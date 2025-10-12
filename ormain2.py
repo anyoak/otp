@@ -214,9 +214,9 @@ def extract_calls(driver):
             
             wait_text = f"""✅ **CALL SESSION ENDED**
 
-📊 **Call Summary**
 
 🔗 **Location**: {call_info['country']} {call_info['flag']}
+
 📞 **Number**: `{call_info['masked']}`
 🚀 **Duration**: Recording...
 
@@ -298,10 +298,10 @@ def process_recording_file(call_info, file_path):
         caption = f"""🎧 **LISTEN YOUR CALL**
 
 🔗 **Geolocation**: {call_info['country']} {call_info['flag']}
+
 📞 **Caller ID**: `{call_info['masked']}`
-⏱️ **Call Duration**: {duration_str}
 
-
+☎️ **Call Duration**: {duration_str}
 🚀 **Timestamp**: {call_info['detected_at'].strftime('%Y-%m-%d %H:%M:%S')}
 
 ✨ *Recording successfully captured*"""
