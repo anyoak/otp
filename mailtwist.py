@@ -75,8 +75,14 @@ def progress_bar(index, total):
 @dp.message(Command("start"))
 async def start_handler(message: types.Message):
     if not await check_channel_join(message.from_user.id):
+        kb = InlineKeyboardBuilder()
+        kb.add(InlineKeyboardButton(
+            text="👀 Check & Get Access",
+            url=f"https://t.me/{CHANNEL_USERNAME.strip('@')}"
+        ))
         return await message.answer(
-            f"⚠️ Please join {CHANNEL_USERNAME} first to unlock MailTwist Premium features."
+            "⚠️ Please join @mailtwist first to unlock MailTwist Premium features.",
+            reply_markup=kb.as_markup()
         )
 
     start_text = (
@@ -92,7 +98,6 @@ async def start_handler(message: types.Message):
         "• /help - Guide & Support\n\n"
         f"❓ Need help? Contact {HELP_CONTACT}"
     )
-
     await message.answer(start_text, parse_mode="HTML")
 
 @dp.message(Command("help"))
@@ -100,10 +105,10 @@ async def help_handler(message: types.Message):
     help_text = (
         "📝 <b>MailTwist Premium 2.0 Guide</b> 📝\n\n"
         "1️⃣ Send a single email or upload TXT/CSV file.\n"
-        "2️⃣ Use /get to fetch the next email variation.\n"
-        "3️⃣ /summary shows total, sent, remaining emails.\n"
-        "4️⃣ /download to get all variations as CSV.\n"
-        "5️⃣ /remove to delete your email lists.\n\n"
+        "2️⃣ /get - fetch next email variation (touch-to-copy!)\n"
+        "3️⃣ /summary - batch progress overview\n"
+        "4️⃣ /download - get all variations as CSV\n"
+        "5️⃣ /remove - delete your lists\n\n"
         f"📬 Support & Questions: {HELP_CONTACT}\n"
         "💎 Enjoy the Premium Experience!"
     )
@@ -167,10 +172,12 @@ async def get_next_handler(message: types.Message):
 
     bar, percent = progress_bar(data["index"], total)
     kb = InlineKeyboardBuilder()
-    kb.add(types.InlineKeyboardButton(text="Next Email ▶️", callback_data="next_email"))
+    kb.add(InlineKeyboardButton(text="Next Email ▶️", callback_data="next_email"))
+
     await msg.edit_text(
-        f"📧 {current_email}\n📊 {bar} {percent}% ({data['index']}/{total}) remaining {total - data['index']}",
-        reply_markup=kb.as_markup()
+        f"📧 <code>{current_email}</code>\n📊 {bar} {percent}% ({data['index']}/{total}) remaining {total - data['index']}",
+        reply_markup=kb.as_markup(),
+        parse_mode="HTML"
     )
 
 @dp.callback_query(F.data=="next_email")
@@ -192,14 +199,15 @@ async def summary_handler(message: types.Message):
     sent = data["index"]
     remaining = total - sent
 
-    await message.answer(
-        f"📌 <b>Batch Summary</b>\n"
-        f"🟢 Total: {total}\n"
-        f"✅ Sent: {sent}\n"
-        f"⏳ Remaining: {remaining}\n"
-        f"💡 Download: /download",
-        parse_mode="HTML"
+    summary_text = (
+        "📌 <b>MailTwist Batch Summary</b> 📌\n\n"
+        f"🟢 <b>Total Emails:</b> {total}\n"
+        f"✅ <b>Processed:</b> {sent}\n"
+        f"⏳ <b>Remaining:</b> {remaining}\n\n"
+        f"💾 Use /download to get full CSV\n"
+        f"💎 Keep creating variations like a Pro!"
     )
+    await message.answer(summary_text, parse_mode="HTML")
 
 # ---------------------------
 # /download Command
@@ -222,7 +230,7 @@ async def remove_handler(message: types.Message):
         return await message.answer("⚠️ No saved lists.")
     kb = InlineKeyboardBuilder()
     for f in files:
-        kb.add(types.InlineKeyboardButton(text=f"🗑 Remove {f}", callback_data=f"remove_{f}"))
+        kb.add(InlineKeyboardButton(text=f"🗑 Remove {f}", callback_data=f"remove_{f}"))
     await message.answer("Select file to remove:", reply_markup=kb.as_markup())
 
 @dp.callback_query(F.data.startswith("remove_"))
