@@ -61,10 +61,16 @@ def generate_variations(email):
             return []
             
         variations = set()
-        # Generate variations by changing case
-        for i in range(1, min(2 ** len(local), 1000)):  # Limit to 1000 variations
-            chars = [c.upper() if (i >> j) & 1 else c.lower() for j, c in enumerate(local)]
-            variations.add("".join(chars) + "@" + domain)
+        # Generate variations by changing case (limit to reasonable number)
+        for i in range(1, min(2 ** len(local), 256)):  # Max 255 variations per email
+            chars = []
+            for j, c in enumerate(local):
+                if (i >> j) & 1:
+                    chars.append(c.upper())
+                else:
+                    chars.append(c.lower())
+            variation = "".join(chars) + "@" + domain
+            variations.add(variation)
         return list(variations)
     except Exception as e:
         logger.error(f"Error generating variations for {email}: {e}")
@@ -91,11 +97,18 @@ async def save_emails(user_id, emails):
     """Save email variations for user"""
     try:
         all_variations = []
-        valid_emails = [email.strip() for email in emails if "@" in email and "." in email.split("@")[1]]
+        valid_emails = []
+        
+        # Validate emails
+        for email in emails:
+            email = email.strip()
+            if "@" in email and "." in email.split("@")[1]:
+                valid_emails.append(email)
         
         if not valid_emails:
             return []
             
+        # Generate variations for each valid email
         for email in valid_emails:
             variations = generate_variations(email)
             all_variations.extend(variations)
@@ -113,15 +126,17 @@ async def save_emails(user_id, emails):
             "created_at": str(asyncio.get_event_loop().time())
         }
         
-        with open(user_file(user_id), "w") as f:
+        json_path = user_file(user_id)
+        with open(json_path, "w", encoding='utf-8') as f:
             json.dump(user_data, f, indent=2)
         
-        # Save to CSV
-        with open(user_csv_file(user_id), "w", newline="", encoding="utf-8") as csvfile:
+        # Save to CSV - FIXED: Proper CSV writing
+        csv_path = user_csv_file(user_id)
+        with open(csv_path, "w", newline="", encoding="utf-8") as csvfile:
             writer = csv.writer(csvfile)
-            writer.writerow(["Email Variations"])
-            for email in all_variations:
-                writer.writerow([email])
+            writer.writerow(["Email Variations", "Index"])
+            for idx, email in enumerate(all_variations, 1):
+                writer.writerow([email, idx])
         
         logger.info(f"Saved {len(all_variations)} variations for user {user_id}")
         return all_variations
@@ -145,7 +160,7 @@ def get_user_data(user_id):
     try:
         path = user_file(user_id)
         if os.path.exists(path):
-            with open(path, "r") as f:
+            with open(path, "r", encoding='utf-8') as f:
                 return json.load(f)
     except Exception as e:
         logger.error(f"Error reading user data for {user_id}: {e}")
@@ -155,7 +170,7 @@ def save_user_data(user_id, data):
     """Save user data safely"""
     try:
         path = user_file(user_id)
-        with open(path, "w") as f:
+        with open(path, "w", encoding='utf-8') as f:
             json.dump(data, f, indent=2)
         return True
     except Exception as e:
@@ -356,11 +371,13 @@ async def document_handler(message: types.Message):
             else:
                 # TXT file - read line by line
                 for line in f:
-                    if "@" in line:
-                        emails.append(line.strip())
+                    line = line.strip()
+                    if "@" in line and "." in line.split("@")[1]:
+                        emails.append(line)
         
         # Clean up temp file
-        os.remove(temp_file)
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
         
         if not emails:
             await processing_msg.edit_text("❌ No valid email addresses found in the file!")
@@ -422,6 +439,8 @@ async def send_next_variation(user_id, message=None, callback=None):
     """Send next email variation (shared function for both messages and callbacks)"""
     user_data = get_user_data(user_id)
     if not user_data:
+        if callback:
+            await callback.message.edit_text("❌ No user data found. Please start over.")
         return
     
     emails = user_data["emails"]
@@ -429,20 +448,16 @@ async def send_next_variation(user_id, message=None, callback=None):
     total = len(emails)
     
     if current_index >= total:
+        text = (
+            "🎉 <b>All variations processed!</b>\n\n"
+            f"✅ Completed: {total} variations\n"
+            f"💾 Use /download to get the complete CSV file\n"
+            f"🔄 Use /remove to start over with new emails"
+        )
         if callback:
-            await callback.message.edit_text(
-                "🎉 <b>All variations processed!</b>\n\n"
-                f"✅ Completed: {total} variations\n"
-                f"💾 Use /download to get the complete CSV file\n"
-                f"🔄 Use /remove to start over with new emails"
-            )
+            await callback.message.edit_text(text)
         else:
-            await message.answer(
-                "🎉 <b>All variations processed!</b>\n\n"
-                f"✅ Completed: {total} variations\n"
-                f"💾 Use /download to get the complete CSV file\n"
-                f"🔄 Use /remove to start over with new emails"
-            )
+            await message.answer(text)
         return
     
     # Get next email
@@ -471,6 +486,7 @@ async def send_next_variation(user_id, message=None, callback=None):
     
     if callback:
         await callback.message.edit_text(response_text, reply_markup=kb.as_markup())
+        await callback.answer()
     else:
         await message.answer(response_text, reply_markup=kb.as_markup())
 
@@ -521,6 +537,7 @@ async def send_summary(user_id, message=None, callback=None):
     
     if callback:
         await callback.message.edit_text(summary_text, reply_markup=kb.as_markup())
+        await callback.answer()
     else:
         await message.answer(summary_text, reply_markup=kb.as_markup())
 
@@ -532,40 +549,70 @@ async def download_handler(message: types.Message):
 
 async def send_csv_file(user_id, message=None, callback=None):
     """Send CSV file (shared function for both messages and callbacks)"""
-    csv_path = user_csv_file(user_id)
-    
-    if not os.path.exists(csv_path):
-        text = (
-            "❌ <b>No CSV file found!</b>\n\n"
-            "Please generate email variations first by:\n"
-            "• Sending an email address\n"
-            "• Uploading a TXT/CSV file\n"
-        )
-        if callback:
-            await callback.message.edit_text(text)
-        else:
-            await message.answer(text)
-        return
-    
     try:
+        csv_path = user_csv_file(user_id)
+        
+        # Check if CSV file exists
+        if not os.path.exists(csv_path):
+            # Try to generate CSV from JSON data
+            user_data = get_user_data(user_id)
+            if user_data and user_data.get("emails"):
+                # Regenerate CSV file
+                emails = user_data["emails"]
+                with open(csv_path, "w", newline="", encoding="utf-8") as csvfile:
+                    writer = csv.writer(csvfile)
+                    writer.writerow(["Email Variations", "Index"])
+                    for idx, email in enumerate(emails, 1):
+                        writer.writerow([email, idx])
+            else:
+                text = (
+                    "❌ <b>No CSV file found!</b>\n\n"
+                    "Please generate email variations first by:\n"
+                    "• Sending an email address\n"
+                    "• Uploading a TXT/CSV file\n"
+                )
+                if callback:
+                    await callback.message.edit_text(text)
+                else:
+                    await message.answer(text)
+                return
+        
+        # Verify file size
+        file_size = os.path.getsize(csv_path)
+        if file_size == 0:
+            text = "❌ CSV file is empty. Please generate variations again."
+            if callback:
+                await callback.message.edit_text(text)
+            else:
+                await message.answer(text)
+            return
+        
         user_data = get_user_data(user_id)
         total_variations = len(user_data.get("emails", [])) if user_data else 0
         
         # Send the document
+        caption = (
+            f"📁 <b>Email Variations Export</b>\n\n"
+            f"🔢 <b>Total Variations:</b> {total_variations}\n"
+            f"💾 <b>File format:</b> CSV\n"
+            f"👤 <b>User ID:</b> {user_id}"
+        )
+        
         if callback:
             await callback.message.answer_document(
                 InputFile(csv_path, filename=f"email_variations_{user_id}.csv"),
-                caption=f"📁 <b>Email Variations Export</b>\n\n🔢 <b>Total Variations:</b> {total_variations}\n💾 <b>File format:</b> CSV"
+                caption=caption
             )
-            await callback.answer("✅ CSV file sent!")
+            await callback.answer("✅ CSV file downloaded successfully!")
         else:
             await message.answer_document(
                 InputFile(csv_path, filename=f"email_variations_{user_id}.csv"),
-                caption=f"📁 <b>Email Variations Export</b>\n\n🔢 <b>Total Variations:</b> {total_variations}\n💾 <b>File format:</b> CSV"
+                caption=caption
             )
+            
     except Exception as e:
-        logger.error(f"Error downloading CSV for user {user_id}: {e}")
-        error_text = "❌ Error downloading file. Please try again."
+        logger.error(f"Error downloading CSV for user {user_id}: {e}", exc_info=True)
+        error_text = "❌ Error downloading file. The file might be corrupted. Please generate variations again."
         if callback:
             await callback.message.edit_text(error_text)
         else:
@@ -608,28 +655,24 @@ async def remove_handler(message: types.Message):
 @dp.callback_query(F.data == "next_email")
 async def next_email_callback(callback: types.CallbackQuery):
     """Handle next email callback"""
-    await callback.answer()
     user_id = callback.from_user.id
     await send_next_variation(user_id, callback=callback)
 
 @dp.callback_query(F.data == "get_first")
 async def get_first_callback(callback: types.CallbackQuery):
     """Handle get first variation callback"""
-    await callback.answer()
     user_id = callback.from_user.id
     await send_next_variation(user_id, callback=callback)
 
 @dp.callback_query(F.data == "download_csv")
 async def download_csv_callback(callback: types.CallbackQuery):
     """Handle download CSV callback"""
-    await callback.answer()
     user_id = callback.from_user.id
     await send_csv_file(user_id, callback=callback)
 
 @dp.callback_query(F.data == "show_summary")
 async def show_summary_callback(callback: types.CallbackQuery):
     """Handle show summary callback"""
-    await callback.answer()
     user_id = callback.from_user.id
     await send_summary(user_id, callback=callback)
 
