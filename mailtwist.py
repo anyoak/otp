@@ -250,13 +250,14 @@ async def download_handler(message: types.Message):
         await message.answer_document(f)
 
 # ---------------------------
-# /remove Command
+# /remove Command (User-specific)
 # ---------------------------
 @dp.message(Command("remove"))
 async def remove_handler(message: types.Message):
-    files = [f for f in os.listdir(DATA_DIR) if f.endswith(".json")]
+    user_id = str(message.from_user.id)
+    files = [f for f in os.listdir(DATA_DIR) if f.startswith(user_id) and f.endswith(".json")]
     if not files:
-        return await message.answer("⚠️ No saved lists.")
+        return await message.answer("⚠️ You have no saved lists.")
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"🗑 Remove {f}", callback_data=f"remove_{f}")] for f in files
     ])
@@ -266,7 +267,7 @@ async def remove_handler(message: types.Message):
 async def remove_callback(call: types.CallbackQuery):
     filename = call.data.replace("remove_", "")
     path = os.path.join(DATA_DIR, filename)
-    csv_path = user_csv_file(call.from_user.id)
+    csv_path = os.path.join(DATA_DIR, filename.replace(".json", "_variations.csv"))
     if os.path.exists(path):
         os.remove(path)
     if os.path.exists(csv_path):
