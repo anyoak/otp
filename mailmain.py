@@ -1,14 +1,13 @@
-
 import os
 import json
 import logging
 import asyncio
 from io import BytesIO
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, BaseMiddleware
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from aiogram.filters import Command
 from aiogram import F
-from aiogram.dispatcher.middlewares import BaseMiddleware
+from aiogram.client.default import DefaultBotProperties
 
 # ---------------------------
 # CONFIG
@@ -21,7 +20,8 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 logging.basicConfig(level=logging.INFO)
 
-bot = Bot(token=BOT_TOKEN)
+# Initialize bot with parse_mode
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode='HTML'))
 dp = Dispatcher()
 
 # ---------------------------
@@ -38,6 +38,7 @@ class AutoRecoverMiddleware(BaseMiddleware):
         if hasattr(event, "message"):
             await event.message.answer("⚠️ Something went wrong. Please try again later.")
 
+# Register middleware
 dp.update.outer_middleware(AutoRecoverMiddleware())
 
 # ---------------------------
@@ -118,7 +119,7 @@ async def start_handler(message: types.Message):
         "• /help - Guide & Support\n"
         f"❓ Need help? Contact {HELP_CONTACT}"
     )
-    await message.answer(start_text, parse_mode="HTML")
+    await message.answer(start_text)
 
 # ---------------------------
 # /help
@@ -134,7 +135,7 @@ async def help_handler(message: types.Message):
         "5️⃣ /remove - delete your lists\n"
         f"📬 Support: {HELP_CONTACT}"
     )
-    await message.answer(help_text, parse_mode="HTML")
+    await message.answer(help_text)
 
 # ---------------------------
 # /download
@@ -153,9 +154,119 @@ async def download_handler(message: types.Message):
         await message.answer("⚠️ TXT file not found.")
 
 # ---------------------------
+# Missing Handlers (Added for completeness)
+# ---------------------------
+@dp.message(Command("get"))
+async def get_handler(message: types.Message):
+    path = user_file(message.from_user.id)
+    if not os.path.exists(path):
+        return await message.answer("⚠️ No email list found. Please send an email first.")
+    
+    with open(path, "r") as f:
+        data = json.load(f)
+    
+    if data["index"] >= len(data["emails"]):
+        await message.answer("🎉 You've reached the end of your email variations!")
+        return
+    
+    email = data["emails"][data["index"]]
+    data["index"] += 1
+    
+    with open(path, "w") as f:
+        json.dump(data, f)
+    
+    bar, percent = progress_bar(data["index"], len(data["emails"]))
+    
+    response_text = (
+        f"📧 Email Variation #{data['index']}:\n"
+        f"<code>{email}</code>\n\n"
+        f"📊 Progress: {data['index']}/{len(data['emails'])}\n"
+        f"{bar} {percent}%"
+    )
+    await message.answer(response_text)
+
+@dp.message(Command("summary"))
+async def summary_handler(message: types.Message):
+    path = user_file(message.from_user.id)
+    if not os.path.exists(path):
+        return await message.answer("⚠️ No email list found.")
+    
+    with open(path, "r") as f:
+        data = json.load(f)
+    
+    bar, percent = progress_bar(data["index"], len(data["emails"]))
+    
+    summary_text = (
+        f"📊 <b>Batch Progress Summary</b>\n"
+        f"📧 Main Email: <code>{data['main_email']}</code>\n"
+        f"🔢 Total Variations: {len(data['emails'])}\n"
+        f"📍 Current Position: {data['index']}\n"
+        f"📈 Progress: {percent}%\n"
+        f"{bar}\n"
+        f"🔄 Remaining: {len(data['emails']) - data['index']}"
+    )
+    await message.answer(summary_text)
+
+@dp.message(Command("remove"))
+async def remove_handler(message: types.Message):
+    path = user_file(message.from_user.id)
+    if os.path.exists(path):
+        with open(path, "r") as f:
+            data = json.load(f)
+        txt_path = user_txt_file(message.from_user.id, data['main_email'])
+        if os.path.exists(txt_path):
+            os.remove(txt_path)
+        os.remove(path)
+        await message.answer("✅ Your email list has been removed successfully.")
+    else:
+        await message.answer("⚠️ No list found to remove.")
+
+# Handle email input and file uploads
+@dp.message(F.text & ~F.text.startswith('/'))
+async def email_input_handler(message: types.Message):
+    email = message.text.strip()
+    if "@" not in email or "." not in email.split("@")[1]:
+        await message.answer("⚠️ Please enter a valid email address.")
+        return
+    
+    variations = await save_emails(message.from_user.id, [email])
+    await message.answer(f"✅ Generated {len(variations)} variations for: <code>{email}</code>\nUse /get to start retrieving them.")
+
+@dp.message(F.document)
+async def file_upload_handler(message: types.Message):
+    if not message.document:
+        return
+    
+    file_name = message.document.file_name or ""
+    if not (file_name.endswith('.txt') or file_name.endswith('.csv')):
+        await message.answer("⚠️ Please upload a .txt or .csv file.")
+        return
+    
+    try:
+        file = await bot.download(message.document)
+        content = file.read().decode('utf-8')
+        emails = [line.strip() for line in content.splitlines() if "@" in line and line.strip()]
+        
+        if not emails:
+            await message.answer("⚠️ No valid emails found in the file.")
+            return
+        
+        variations = await save_emails(message.from_user.id, emails)
+        await message.answer(f"✅ Processed {len(emails)} emails and generated {len(variations)} total variations.\nUse /get to start retrieving them.")
+        
+    except Exception as e:
+        logging.error(f"File processing error: {e}")
+        await message.answer("⚠️ Error processing file. Please try again.")
+
+# ---------------------------
 # Run Bot
 # ---------------------------
 if __name__ == "__main__":
-    import uvloop
-    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+    try:
+        import uvloop
+        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+    except ImportError:
+        logging.warning("uvloop not available, using default event loop")
+    
+    logging.info("Bot starting...")
     dp.run_polling(bot, skip_updates=True)
