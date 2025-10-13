@@ -169,7 +169,6 @@ def save_user_data(user_id, data):
 async def start_handler(message: types.Message):
     """Handle /start command"""
     user_id = message.from_user.id
-    username = message.from_user.username or message.from_user.first_name
     
     if not await check_channel_join(user_id):
         kb = InlineKeyboardBuilder()
@@ -199,20 +198,23 @@ async def start_handler(message: types.Message):
         "• /download - Download all variations as CSV\n"
         "• /remove - Delete your data\n"
         "• /help - Guide & support\n\n"
-        f"📬 <b>Support:</b> {HELP_CONTACT}\n"
-        f"👤 <b>User ID:</b> <code>{user_id}</code>"
+        f"📬 <b>Support:</b> {HELP_CONTACT}"
     )
     await message.answer(welcome_text)
 
 @dp.callback_query(F.data == "check_join")
 async def check_join_callback(callback: types.CallbackQuery):
     """Handle join check callback"""
-    if await check_channel_join(callback.from_user.id):
+    user_id = callback.from_user.id
+    if await check_channel_join(user_id):
         await callback.message.edit_text(
-            "✅ Great! You've joined the channel. Use /start to begin."
+            "✅ <b>Access Granted!</b>\n\n"
+            "You've successfully joined the channel. Now you can use all MailTwist Premium features!\n\n"
+            "Send me an email address or upload a file to get started."
         )
+        await callback.answer()
     else:
-        await callback.answer("❌ Please join the channel first!", show_alert=True)
+        await callback.answer("❌ Please join the channel first! Click the 'Join Channel' button.", show_alert=True)
 
 @dp.message(Command("help"))
 async def help_handler(message: types.Message):
@@ -235,8 +237,7 @@ async def help_handler(message: types.Message):
         "/download - Download CSV\n"
         "/remove - Delete your data\n"
         "/help - This guide\n\n"
-        f"📬 <b>Support Contact:</b> {HELP_CONTACT}\n"
-        "🚀 <b>Enjoy premium email variation generation!</b>"
+        f"📬 <b>Support Contact:</b> {HELP_CONTACT}"
     )
     await message.answer(help_text)
 
@@ -255,6 +256,9 @@ async def text_message_handler(message: types.Message):
     
     # Check if it looks like an email
     if "@" in text and "." in text.split("@")[1]:
+        # Show processing message
+        processing_msg = await message.answer("🔄 <b>Generating email variations...</b>")
+        
         # Single email
         variations = await save_emails(user_id, [text])
         
@@ -263,24 +267,25 @@ async def text_message_handler(message: types.Message):
                 f"✅ <b>Email Variations Generated Successfully!</b>\n\n"
                 f"📧 <b>Original Email:</b> <code>{text}</code>\n"
                 f"🔢 <b>Total Variations:</b> {len(variations)}\n\n"
-                f"💡 Use /get to start retrieving variations\n"
-                f"📊 Use /summary to check progress\n"
-                f"💾 Use /download to get all variations as CSV"
+                f"💡 Use the buttons below to manage your variations:"
             )
             
             kb = InlineKeyboardBuilder()
-            kb.add(InlineKeyboardButton(text="🚀 Get First Variation", callback_data="get_first"))
-            kb.add(InlineKeyboardButton(text="📥 Download CSV", callback_data="download_csv"))
+            kb.button(text="🚀 Get First Variation", callback_data="get_first")
+            kb.button(text="📥 Download CSV", callback_data="download_csv")
+            kb.button(text="📊 View Summary", callback_data="show_summary")
+            kb.adjust(1)  # One button per row
             
-            await message.answer(response_text, reply_markup=kb.as_markup())
+            await processing_msg.edit_text(response_text, reply_markup=kb.as_markup())
         else:
-            await message.answer("❌ Could not generate variations. Please check the email format.")
+            await processing_msg.edit_text("❌ Could not generate variations. Please check the email format.")
     
     else:
         # Multiple emails in text (one per line)
         emails = [line.strip() for line in text.split('\n') if line.strip() and "@" in line and "." in line.split("@")[1]]
         
         if emails:
+            processing_msg = await message.answer("🔄 <b>Processing multiple emails...</b>")
             variations = await save_emails(user_id, emails)
             
             if variations:
@@ -288,18 +293,18 @@ async def text_message_handler(message: types.Message):
                     f"✅ <b>Batch Email Processing Complete!</b>\n\n"
                     f"📧 <b>Original Emails:</b> {len(emails)}\n"
                     f"🔢 <b>Total Variations:</b> {len(variations)}\n\n"
-                    f"💡 Use /get to start retrieving variations\n"
-                    f"📊 Use /summary to check progress\n"
-                    f"💾 Use /download to get all variations as CSV"
+                    f"💡 Use the buttons below to manage your variations:"
                 )
                 
                 kb = InlineKeyboardBuilder()
-                kb.add(InlineKeyboardButton(text="🚀 Get First Variation", callback_data="get_first"))
-                kb.add(InlineKeyboardButton(text="📥 Download CSV", callback_data="download_csv"))
+                kb.button(text="🚀 Get First Variation", callback_data="get_first")
+                kb.button(text="📥 Download CSV", callback_data="download_csv")
+                kb.button(text="📊 View Summary", callback_data="show_summary")
+                kb.adjust(1)
                 
-                await message.answer(response_text, reply_markup=kb.as_markup())
+                await processing_msg.edit_text(response_text, reply_markup=kb.as_markup())
             else:
-                await message.answer("❌ Could not generate variations from the provided emails.")
+                await processing_msg.edit_text("❌ Could not generate variations from the provided emails.")
         else:
             await message.answer(
                 "📧 <b>Please send a valid email address or upload a file</b>\n\n"
@@ -332,8 +337,11 @@ async def document_handler(message: types.Message):
         return
     
     try:
+        # Show processing message
+        processing_msg = await message.answer("🔄 <b>Processing your file...</b>")
+        
         # Download file
-        temp_file = f"temp_{user_id}_{file_name}"
+        temp_file = os.path.join(DATA_DIR, f"temp_{user_id}_{file_name}")
         await bot.download(document, destination=temp_file)
         
         # Read emails from file
@@ -355,7 +363,7 @@ async def document_handler(message: types.Message):
         os.remove(temp_file)
         
         if not emails:
-            await message.answer("❌ No valid email addresses found in the file!")
+            await processing_msg.edit_text("❌ No valid email addresses found in the file!")
             return
         
         # Process emails
@@ -367,18 +375,18 @@ async def document_handler(message: types.Message):
                 f"📁 <b>File:</b> {file_name}\n"
                 f"📧 <b>Emails Found:</b> {len(emails)}\n"
                 f"🔢 <b>Total Variations:</b> {len(variations)}\n\n"
-                f"💡 Use /get to start retrieving variations\n"
-                f"📊 Use /summary to check progress\n"
-                f"💾 Use /download to get all variations as CSV"
+                f"💡 Use the buttons below to manage your variations:"
             )
             
             kb = InlineKeyboardBuilder()
-            kb.add(InlineKeyboardButton(text="🚀 Get First Variation", callback_data="get_first"))
-            kb.add(InlineKeyboardButton(text="📥 Download CSV", callback_data="download_csv"))
+            kb.button(text="🚀 Get First Variation", callback_data="get_first")
+            kb.button(text="📥 Download CSV", callback_data="download_csv")
+            kb.button(text="📊 View Summary", callback_data="show_summary")
+            kb.adjust(1)
             
-            await message.answer(response_text, reply_markup=kb.as_markup())
+            await processing_msg.edit_text(response_text, reply_markup=kb.as_markup())
         else:
-            await message.answer("❌ Could not generate variations from the file content.")
+            await processing_msg.edit_text("❌ Could not generate variations from the file content.")
             
     except Exception as e:
         logger.error(f"Error processing file for user {user_id}: {e}")
@@ -399,7 +407,7 @@ async def get_handler(message: types.Message):
     if not user_data or not user_data.get("emails"):
         await message.answer(
             "📧 <b>No email variations found!</b>\n\n"
-            "Please send an email address or upload a file first.\n"
+            "Please send an email address or upload a file first.\n\n"
             "You can:\n"
             "• Send a single email\n"
             "• Send multiple emails (one per line)\n" 
@@ -408,17 +416,33 @@ async def get_handler(message: types.Message):
         )
         return
     
+    await send_next_variation(user_id, message)
+
+async def send_next_variation(user_id, message=None, callback=None):
+    """Send next email variation (shared function for both messages and callbacks)"""
+    user_data = get_user_data(user_id)
+    if not user_data:
+        return
+    
     emails = user_data["emails"]
     current_index = user_data["index"]
     total = len(emails)
     
     if current_index >= total:
-        await message.answer(
-            "🎉 <b>All variations processed!</b>\n\n"
-            f"✅ Completed: {total} variations\n"
-            f"💾 Use /download to get the complete CSV file\n"
-            f"🔄 Use /remove to start over with new emails"
-        )
+        if callback:
+            await callback.message.edit_text(
+                "🎉 <b>All variations processed!</b>\n\n"
+                f"✅ Completed: {total} variations\n"
+                f"💾 Use /download to get the complete CSV file\n"
+                f"🔄 Use /remove to start over with new emails"
+            )
+        else:
+            await message.answer(
+                "🎉 <b>All variations processed!</b>\n\n"
+                f"✅ Completed: {total} variations\n"
+                f"💾 Use /download to get the complete CSV file\n"
+                f"🔄 Use /remove to start over with new emails"
+            )
         return
     
     # Get next email
@@ -440,22 +464,32 @@ async def get_handler(message: types.Message):
     )
     
     kb = InlineKeyboardBuilder()
-    kb.add(InlineKeyboardButton(text="▶️ Next Variation", callback_data="next_email"))
-    kb.add(InlineKeyboardButton(text="📊 Summary", callback_data="show_summary"))
+    kb.button(text="▶️ Next Variation", callback_data="next_email")
+    kb.button(text="📊 Summary", callback_data="show_summary")
+    kb.button(text="📥 Download CSV", callback_data="download_csv")
+    kb.adjust(1)
     
-    await message.answer(response_text, reply_markup=kb.as_markup())
+    if callback:
+        await callback.message.edit_text(response_text, reply_markup=kb.as_markup())
+    else:
+        await message.answer(response_text, reply_markup=kb.as_markup())
 
 @dp.message(Command("summary"))
 async def summary_handler(message: types.Message):
     """Handle /summary command"""
     user_id = message.from_user.id
+    await send_summary(user_id, message)
+
+async def send_summary(user_id, message=None, callback=None):
+    """Send summary (shared function for both messages and callbacks)"""
     user_data = get_user_data(user_id)
     
     if not user_data or not user_data.get("emails"):
-        await message.answer(
-            "📊 <b>No active session found!</b>\n\n"
-            "Send an email or upload a file to get started."
-        )
+        text = "📊 <b>No active session found!</b>\n\nSend an email or upload a file to get started."
+        if callback:
+            await callback.message.edit_text(text)
+        else:
+            await message.answer(text)
         return
     
     emails = user_data["emails"]
@@ -481,38 +515,61 @@ async def summary_handler(message: types.Message):
     
     kb = InlineKeyboardBuilder()
     if current_index < total:
-        kb.add(InlineKeyboardButton(text="▶️ Continue", callback_data="next_email"))
-    kb.add(InlineKeyboardButton(text="💾 Download CSV", callback_data="download_csv"))
+        kb.button(text="▶️ Continue", callback_data="next_email")
+    kb.button(text="💾 Download CSV", callback_data="download_csv")
+    kb.adjust(1)
     
-    await message.answer(summary_text, reply_markup=kb.as_markup())
+    if callback:
+        await callback.message.edit_text(summary_text, reply_markup=kb.as_markup())
+    else:
+        await message.answer(summary_text, reply_markup=kb.as_markup())
 
 @dp.message(Command("download"))
 async def download_handler(message: types.Message):
     """Handle /download command"""
     user_id = message.from_user.id
+    await send_csv_file(user_id, message)
+
+async def send_csv_file(user_id, message=None, callback=None):
+    """Send CSV file (shared function for both messages and callbacks)"""
     csv_path = user_csv_file(user_id)
     
     if not os.path.exists(csv_path):
-        await message.answer(
+        text = (
             "❌ <b>No CSV file found!</b>\n\n"
             "Please generate email variations first by:\n"
             "• Sending an email address\n"
             "• Uploading a TXT/CSV file\n"
-            "• Using the /get command at least once"
         )
+        if callback:
+            await callback.message.edit_text(text)
+        else:
+            await message.answer(text)
         return
     
     try:
         user_data = get_user_data(user_id)
         total_variations = len(user_data.get("emails", [])) if user_data else 0
         
-        await message.answer_document(
-            InputFile(csv_path, filename=f"email_variations_{user_id}.csv"),
-            caption=f"📁 <b>Email Variations Export</b>\n\n🔢 <b>Total Variations:</b> {total_variations}\n💾 <b>File format:</b> CSV"
-        )
+        # Send the document
+        if callback:
+            await callback.message.answer_document(
+                InputFile(csv_path, filename=f"email_variations_{user_id}.csv"),
+                caption=f"📁 <b>Email Variations Export</b>\n\n🔢 <b>Total Variations:</b> {total_variations}\n💾 <b>File format:</b> CSV"
+            )
+            await callback.answer("✅ CSV file sent!")
+        else:
+            await message.answer_document(
+                InputFile(csv_path, filename=f"email_variations_{user_id}.csv"),
+                caption=f"📁 <b>Email Variations Export</b>\n\n🔢 <b>Total Variations:</b> {total_variations}\n💾 <b>File format:</b> CSV"
+            )
     except Exception as e:
         logger.error(f"Error downloading CSV for user {user_id}: {e}")
-        await message.answer("❌ Error downloading file. Please try again.")
+        error_text = "❌ Error downloading file. Please try again."
+        if callback:
+            await callback.message.edit_text(error_text)
+        else:
+            await message.answer(error_text)
 
 @dp.message(Command("remove"))
 async def remove_handler(message: types.Message):
@@ -546,59 +603,43 @@ async def remove_handler(message: types.Message):
         )
 
 # ---------------------------
-# CALLBACK HANDLERS
+# CALLBACK HANDLERS - FIXED!
 # ---------------------------
 @dp.callback_query(F.data == "next_email")
 async def next_email_callback(callback: types.CallbackQuery):
     """Handle next email callback"""
     await callback.answer()
-    msg = types.Message(
-        chat=callback.message.chat,
-        from_user=callback.from_user,
-        text="/get"
-    )
-    await get_handler(msg)
+    user_id = callback.from_user.id
+    await send_next_variation(user_id, callback=callback)
 
 @dp.callback_query(F.data == "get_first")
 async def get_first_callback(callback: types.CallbackQuery):
     """Handle get first variation callback"""
     await callback.answer()
-    msg = types.Message(
-        chat=callback.message.chat,
-        from_user=callback.from_user, 
-        text="/get"
-    )
-    await get_handler(msg)
+    user_id = callback.from_user.id
+    await send_next_variation(user_id, callback=callback)
 
 @dp.callback_query(F.data == "download_csv")
 async def download_csv_callback(callback: types.CallbackQuery):
     """Handle download CSV callback"""
     await callback.answer()
-    msg = types.Message(
-        chat=callback.message.chat,
-        from_user=callback.from_user,
-        text="/download"
-    )
-    await download_handler(msg)
+    user_id = callback.from_user.id
+    await send_csv_file(user_id, callback=callback)
 
 @dp.callback_query(F.data == "show_summary")
 async def show_summary_callback(callback: types.CallbackQuery):
     """Handle show summary callback"""
     await callback.answer()
-    msg = types.Message(
-        chat=callback.message.chat,
-        from_user=callback.from_user,
-        text="/summary"
-    )
-    await summary_handler(msg)
+    user_id = callback.from_user.id
+    await send_summary(user_id, callback=callback)
 
 # ---------------------------
 # ERROR HANDLER
 # ---------------------------
 @dp.errors()
-async def error_handler(update, exception):
+async def error_handler(event, exception):
     """Global error handler"""
-    logger.error(f"Update {update} caused error: {exception}", exc_info=True)
+    logger.error(f"Update {event} caused error: {exception}", exc_info=True)
     return True
 
 # ---------------------------
