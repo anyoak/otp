@@ -4,7 +4,7 @@ import csv
 import logging
 import asyncio
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from aiogram.filters import Command
 from aiogram import F
 
@@ -137,8 +137,7 @@ async def single_email_handler(message: types.Message):
     email = message.text.strip()
     variations = await save_emails(message.from_user.id, [email])
     await message.answer(f"✅ Generated {len(variations)} variations.")
-    with open(user_csv_file(message.from_user.id), "rb") as f:
-        await message.answer_document(f)
+    await message.answer_document(InputFile(user_csv_file(message.from_user.id)))
 
 @dp.message(lambda m: m.document)
 async def file_upload_handler(message: types.Message):
@@ -166,8 +165,7 @@ async def file_upload_handler(message: types.Message):
     os.remove(temp_path)
 
     await message.answer(f"✅ Batch processed {len(emails)} emails, {len(variations)} variations total.")
-    with open(user_csv_file(message.from_user.id), "rb") as f:
-        await message.answer_document(f)
+    await message.answer_document(InputFile(user_csv_file(message.from_user.id)))
 
 # ---------------------------
 # /get Command
@@ -246,8 +244,7 @@ async def download_handler(message: types.Message):
     if len(lines) == 0:
         return await message.answer("⚠️ CSV is empty. Generate some emails first.")
 
-    with open(csv_path, "rb") as f:
-        await message.answer_document(f)
+    await message.answer_document(InputFile(path=csv_path))
 
 # ---------------------------
 # /remove Command (User-specific)
