@@ -4,7 +4,7 @@ import csv
 import logging
 import asyncio
 from aiogram import Bot, Dispatcher, types, BaseMiddleware
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputFile
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, FSInputFile
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram import F
@@ -13,7 +13,7 @@ from aiogram.client.default import DefaultBotProperties
 # ---------------------------
 # CONFIG
 # ---------------------------
-BOT_TOKEN = "8472314239:AAEuxP4QTgl-gCg4SUl13htj8V7ZE3LB8nc"  # Replace with your actual token
+BOT_TOKEN = "8472314239:AAEuxP4QTgl-gCg4SUl13htj8V7ZE3LB8nc"  # Your actual token
 CHANNEL_USERNAME = "@mailtwist"
 HELP_CONTACT = "@professor_cry"
 DATA_DIR = "user_data"
@@ -130,13 +130,13 @@ async def save_emails(user_id, emails):
         with open(json_path, "w", encoding='utf-8') as f:
             json.dump(user_data, f, indent=2)
         
-        # Save to CSV - FIXED: Proper CSV writing
+        # Save to CSV
         csv_path = user_csv_file(user_id)
         with open(csv_path, "w", newline="", encoding="utf-8") as csvfile:
             writer = csv.writer(csvfile)
-            writer.writerow(["Email Variations", "Index"])
-            for idx, email in enumerate(all_variations, 1):
-                writer.writerow([email, idx])
+            writer.writerow(["Email Variations"])
+            for email in all_variations:
+                writer.writerow([email])
         
         logger.info(f"Saved {len(all_variations)} variations for user {user_id}")
         return all_variations
@@ -451,13 +451,17 @@ async def send_next_variation(user_id, message=None, callback=None):
         text = (
             "🎉 <b>All variations processed!</b>\n\n"
             f"✅ Completed: {total} variations\n"
-            f"💾 Use /download to get the complete CSV file\n"
+            f"💾 Download your CSV file using the button below\n"
             f"🔄 Use /remove to start over with new emails"
         )
+        
+        kb = InlineKeyboardBuilder()
+        kb.button(text="📥 Download CSV", callback_data="download_csv")
+        
         if callback:
-            await callback.message.edit_text(text)
+            await callback.message.edit_text(text, reply_markup=kb.as_markup())
         else:
-            await message.answer(text)
+            await message.answer(text, reply_markup=kb.as_markup())
         return
     
     # Get next email
@@ -561,9 +565,9 @@ async def send_csv_file(user_id, message=None, callback=None):
                 emails = user_data["emails"]
                 with open(csv_path, "w", newline="", encoding="utf-8") as csvfile:
                     writer = csv.writer(csvfile)
-                    writer.writerow(["Email Variations", "Index"])
-                    for idx, email in enumerate(emails, 1):
-                        writer.writerow([email, idx])
+                    writer.writerow(["Email Variations"])
+                    for email in emails:
+                        writer.writerow([email])
             else:
                 text = (
                     "❌ <b>No CSV file found!</b>\n\n"
@@ -590,7 +594,9 @@ async def send_csv_file(user_id, message=None, callback=None):
         user_data = get_user_data(user_id)
         total_variations = len(user_data.get("emails", [])) if user_data else 0
         
-        # Send the document
+        # ✅ FIXED: Use FSInputFile instead of InputFile
+        file_to_send = FSInputFile(csv_path, filename=f"email_variations_{user_id}.csv")
+        
         caption = (
             f"📁 <b>Email Variations Export</b>\n\n"
             f"🔢 <b>Total Variations:</b> {total_variations}\n"
@@ -599,20 +605,14 @@ async def send_csv_file(user_id, message=None, callback=None):
         )
         
         if callback:
-            await callback.message.answer_document(
-                InputFile(csv_path, filename=f"email_variations_{user_id}.csv"),
-                caption=caption
-            )
+            await callback.message.answer_document(file_to_send, caption=caption)
             await callback.answer("✅ CSV file downloaded successfully!")
         else:
-            await message.answer_document(
-                InputFile(csv_path, filename=f"email_variations_{user_id}.csv"),
-                caption=caption
-            )
+            await message.answer_document(file_to_send, caption=caption)
             
     except Exception as e:
         logger.error(f"Error downloading CSV for user {user_id}: {e}", exc_info=True)
-        error_text = "❌ Error downloading file. The file might be corrupted. Please generate variations again."
+        error_text = "❌ Error downloading file. Please try generating variations again."
         if callback:
             await callback.message.edit_text(error_text)
         else:
