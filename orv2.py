@@ -246,8 +246,8 @@ class AccountManager:
             completed_calls = []  
               
             for call_id, call_info in list(self.active_calls.items()):  
-                if (call_id not in current_call_ids) or \  
-                   ((current_time - call_info["last_seen"]).total_seconds() > 15):  
+                # FIXED: Removed backslash and combined the condition properly
+                if (call_id not in current_call_ids) or ((current_time - call_info["last_seen"]).total_seconds() > 15):
                     if call_id not in self.pending_recordings:  
                         print(f"[✅] Account {self.account_id}: Call completed: {call_info['did_number']}")  
                         completed_calls.append(call_id)  
