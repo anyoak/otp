@@ -6,13 +6,12 @@ import asyncio
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.filters import Command
-from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram import F
 
 # ---------------------------
 # CONFIG
 # ---------------------------
-BOT_TOKEN = "8472314239:AAEuxP4QTgl-gCg4SUl13htj8V7ZE3LB8nc"
+BOT_TOKEN = "8472314239:AAEuxP4QTgl-gCg4SUl13htj8V7ZE3LB8nc"  # Replace with your bot token
 CHANNEL_USERNAME = "@mailtwist"
 HELP_CONTACT = "@professor_cry"
 DATA_DIR = "user_data"
@@ -70,19 +69,20 @@ def progress_bar(index, total):
     return bar, percent
 
 # ---------------------------
-# Commands (Premium Look)
+# /start Command
 # ---------------------------
 @dp.message(Command("start"))
 async def start_handler(message: types.Message):
     if not await check_channel_join(message.from_user.id):
-        kb = InlineKeyboardBuilder()
-        kb.add(InlineKeyboardButton(
-            text="👀 Check & Get Access",
-            url=f"https://t.me/{CHANNEL_USERNAME.strip('@')}"
-        ))
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="👀 Check & Get Access",
+                url=f"https://t.me/{CHANNEL_USERNAME.strip('@')}"
+            )]
+        ])
         return await message.answer(
             "⚠️ Please join @mailtwist first to unlock MailTwist Premium features.",
-            reply_markup=kb.as_markup()
+            reply_markup=kb
         )
 
     start_text = (
@@ -100,6 +100,9 @@ async def start_handler(message: types.Message):
     )
     await message.answer(start_text, parse_mode="HTML")
 
+# ---------------------------
+# /help Command
+# ---------------------------
 @dp.message(Command("help"))
 async def help_handler(message: types.Message):
     help_text = (
@@ -120,19 +123,37 @@ async def help_handler(message: types.Message):
 @dp.message(lambda m: "@" in m.text and "." in m.text)
 async def single_email_handler(message: types.Message):
     if not await check_channel_join(message.from_user.id):
-        return await message.answer(f"⚠️ Join {CHANNEL_USERNAME} first!")
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="👀 Check & Get Access",
+                url=f"https://t.me/{CHANNEL_USERNAME.strip('@')}"
+            )]
+        ])
+        return await message.answer(
+            "⚠️ Join @mailtwist first to use MailTwist Premium.",
+            reply_markup=kb
+        )
 
     email = message.text.strip()
     variations = await save_emails(message.from_user.id, [email])
     await message.answer(f"✅ Generated {len(variations)} variations.")
-    await message.answer_document(open(user_csv_file(message.from_user.id), "rb"))
+    with open(user_csv_file(message.from_user.id), "rb") as f:
+        await message.answer_document(f)
 
 @dp.message(lambda m: m.document)
 async def file_upload_handler(message: types.Message):
     if not await check_channel_join(message.from_user.id):
-        return await message.answer(f"⚠️ Join {CHANNEL_USERNAME} first!")
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="👀 Check & Get Access",
+                url=f"https://t.me/{CHANNEL_USERNAME.strip('@')}"
+            )]
+        ])
+        return await message.answer(
+            "⚠️ Join @mailtwist first to use MailTwist Premium.",
+            reply_markup=kb
+        )
 
-    file = await message.document.get_file()
     ext = os.path.splitext(message.document.file_name)[1]
     if ext not in [".txt", ".csv"]:
         return await message.answer("⚠️ Only TXT/CSV files supported.")
@@ -145,7 +166,8 @@ async def file_upload_handler(message: types.Message):
     os.remove(temp_path)
 
     await message.answer(f"✅ Batch processed {len(emails)} emails, {len(variations)} variations total.")
-    await message.answer_document(open(user_csv_file(message.from_user.id), "rb"))
+    with open(user_csv_file(message.from_user.id), "rb") as f:
+        await message.answer_document(f)
 
 # ---------------------------
 # /get Command
@@ -171,12 +193,13 @@ async def get_next_handler(message: types.Message):
     json.dump(data, open(path, "w"))
 
     bar, percent = progress_bar(data["index"], total)
-    kb = InlineKeyboardBuilder()
-    kb.add(InlineKeyboardButton(text="Next Email ▶️", callback_data="next_email"))
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Next Email ▶️", callback_data="next_email")]
+    ])
 
     await msg.edit_text(
         f"📧 <code>{current_email}</code>\n📊 {bar} {percent}% ({data['index']}/{total}) remaining {total - data['index']}",
-        reply_markup=kb.as_markup(),
+        reply_markup=kb,
         parse_mode="HTML"
     )
 
@@ -215,10 +238,16 @@ async def summary_handler(message: types.Message):
 @dp.message(Command("download"))
 async def download_handler(message: types.Message):
     csv_path = user_csv_file(message.from_user.id)
-    if os.path.exists(csv_path):
-        await message.answer_document(open(csv_path, "rb"))
-    else:
-        await message.answer("⚠️ No variations found. Send email(s) first.")
+    if not os.path.exists(csv_path):
+        return await message.answer("⚠️ No variations found. Send email(s) first.")
+
+    with open(csv_path, "r") as f_check:
+        lines = f_check.readlines()
+    if len(lines) == 0:
+        return await message.answer("⚠️ CSV is empty. Generate some emails first.")
+
+    with open(csv_path, "rb") as f:
+        await message.answer_document(f)
 
 # ---------------------------
 # /remove Command
@@ -228,10 +257,10 @@ async def remove_handler(message: types.Message):
     files = [f for f in os.listdir(DATA_DIR) if f.endswith(".json")]
     if not files:
         return await message.answer("⚠️ No saved lists.")
-    kb = InlineKeyboardBuilder()
-    for f in files:
-        kb.add(InlineKeyboardButton(text=f"🗑 Remove {f}", callback_data=f"remove_{f}"))
-    await message.answer("Select file to remove:", reply_markup=kb.as_markup())
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"🗑 Remove {f}", callback_data=f"remove_{f}")] for f in files
+    ])
+    await message.answer("Select file to remove:", reply_markup=kb)
 
 @dp.callback_query(F.data.startswith("remove_"))
 async def remove_callback(call: types.CallbackQuery):
