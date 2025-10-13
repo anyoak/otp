@@ -13,7 +13,7 @@ from aiogram.dispatcher.middlewares import BaseMiddleware
 # ---------------------------
 # CONFIG
 # ---------------------------
-BOT_TOKEN = "YOUR_BOT_TOKEN"
+BOT_TOKEN = "8472314239:AAEuxP4QTgl-gCg4SUl13htj8V7ZE3LB8nc"
 CHANNEL_USERNAME = "@mailtwist"
 HELP_CONTACT = "@professor_cry"
 DATA_DIR = "user_data"
