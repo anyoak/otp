@@ -13,6 +13,7 @@ from selenium.common.exceptions import TimeoutException, StaleElementReferenceEx
 import phonenumbers
 from phonenumbers import region_code_for_number
 import pycountry
+from pydub import AudioSegment
 import config
 
 class AccountManager:
@@ -80,7 +81,11 @@ class AccountManager:
                 payload = {"chat_id": config.CHAT_ID, "caption": caption, "parse_mode": "HTML"}
                 files = {"voice": voice}
                 response = requests.post(url, data=payload, files=files, timeout=60)
-                return response.status_code == 200
+                if response.status_code == 200:
+                    return True
+                else:
+                    print(f"[❌] Account {self.account_id}: Send voice failed with status {response.status_code}: {response.text}")
+                    return False
         except Exception as e:
             print(f"[❌] Account {self.account_id}: Failed to send voice: {e}")
             return False
@@ -110,8 +115,8 @@ class AccountManager:
     def simulate_play_button(self, did_number, call_uuid):
         try:
             script = f'window.Play("{did_number}", "{call_uuid}"); return "Play executed";'
-            self.driver.execute_script(script)
-            print(f"[▶️] Account {self.account_id}: Play button simulated: {did_number}")
+            result = self.driver.execute_script(script)
+            print(f"[▶️] Account {self.account_id}: Play button simulated: {did_number} - Result: {result}")
             return True
         except Exception as e:
             print(f"[❌] Account {self.account_id}: Play simulation failed: {e}")
@@ -119,7 +124,8 @@ class AccountManager:
 
     def download_recording(self, did_number, call_uuid, file_path):
         try:
-            self.simulate_play_button(did_number, call_uuid)
+            if not self.simulate_play_button(did_number, call_uuid):
+                return False
             time.sleep(3)
 
             recording_url = self.construct_recording_url(did_number, call_uuid)  
@@ -135,31 +141,36 @@ class AccountManager:
                 'Pragma': 'no-cache'
             }
             
-            # Add retry mechanism
-            for attempt in range(3):
+            # Add retry mechanism with longer delay
+            for attempt in range(5):
                 try:
-                    response = session.get(recording_url, headers=headers, timeout=30, stream=True)
+                    print(f"[📥] Account {self.account_id}: Download attempt {attempt+1} for {recording_url}")
+                    response = session.get(recording_url, headers=headers, timeout=60, stream=True)
+                    
+                    print(f"[HTTP] Account {self.account_id}: Status {response.status_code}, Content-Type: {response.headers.get('Content-Type')}")
                     
                     if response.status_code == 200:
                         with open(file_path, "wb") as f:
+                            total_bytes = 0
                             for chunk in response.iter_content(chunk_size=8192):
                                 if chunk:
                                     f.write(chunk)
+                                    total_bytes += len(chunk)
                         
-                        file_size = os.path.getsize(file_path)
-                        if file_size > 1000:
-                            print(f"[✅] Account {self.account_id}: Recording downloaded - {file_size} bytes")
+                        if total_bytes > 2000:  # Increased minimum size threshold
+                            print(f"[✅] Account {self.account_id}: Recording downloaded - {total_bytes} bytes")
                             return True
                         else:
-                            print(f"[⚠️] Account {self.account_id}: File too small - {file_size} bytes")
+                            print(f"[⚠️] Account {self.account_id}: File too small - {total_bytes} bytes")
                             os.remove(file_path)
-                            time.sleep(2)
                     else:
-                        print(f"[❌] Account {self.account_id}: HTTP {response.status_code}")
+                        print(f"[❌] Account {self.account_id}: HTTP {response.status_code} - {response.text[:100]}")
                         
+                    time.sleep(5)  # Delay between retries
+                    
                 except Exception as e:
                     print(f"[❌] Account {self.account_id}: Download attempt {attempt+1} failed: {e}")
-                    time.sleep(2)
+                    time.sleep(5)
                     
             return False
             
@@ -246,7 +257,6 @@ class AccountManager:
             completed_calls = []  
               
             for call_id, call_info in list(self.active_calls.items()):  
-                # FIXED: Removed backslash and combined the condition properly
                 if (call_id not in current_call_ids) or ((current_time - call_info["last_seen"]).total_seconds() > 15):
                     if call_id not in self.pending_recordings:  
                         print(f"[✅] Account {self.account_id}: Call completed: {call_info['did_number']}")  
@@ -294,10 +304,10 @@ class AccountManager:
                 print(f"[🔍] Account {self.account_id}: Check #{call_info['checks']} for: {call_info['did_number']}")  
                   
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")  
-                file_path = os.path.join(self.download_folder, f"call_{call_info['did_number']}_{timestamp}.mp3")  
+                mp3_path = os.path.join(self.download_folder, f"call_{call_info['did_number']}_{timestamp}.mp3")  
                   
-                if self.download_recording(call_info['did_number'], call_id, file_path):  
-                    self.process_recording_file(call_info, file_path)  
+                if self.download_recording(call_info['did_number'], call_id, mp3_path):  
+                    self.process_recording_file(call_info, mp3_path)  
                     processed_calls.append(call_id)  
                 else:  
                     print(f"[❌] Account {self.account_id}: Recording not available: {call_info['did_number']}")  
@@ -321,8 +331,13 @@ class AccountManager:
             if call_id in self.pending_recordings:  
                 del self.pending_recordings[call_id]
 
-    def process_recording_file(self, call_info, file_path):
+    def process_recording_file(self, call_info, mp3_path):
         try:
+            ogg_path = mp3_path.replace('.mp3', '.ogg')
+            audio = AudioSegment.from_mp3(mp3_path)
+            audio.export(ogg_path, format='ogg', codec='opus')
+            print(f"[🔄] Account {self.account_id}: Converted MP3 to OGG: {ogg_path}")
+
             if call_info.get("msg_id"):
                 self.delete_message(call_info["msg_id"])
 
@@ -337,20 +352,26 @@ class AccountManager:
                 f"🌟 Configure by @professor_cry"  
             )  
               
-            if self.send_voice_with_caption(file_path, caption):  
+            if self.send_voice_with_caption(ogg_path, caption):  
                 print(f"[✅] Account {self.account_id}: Recording sent: {call_info['did_number']}")  
-                # Clean up file after successful send
+                # Clean up files after successful send
                 try:
-                    os.remove(file_path)
+                    os.remove(mp3_path)
+                    os.remove(ogg_path)
                 except:
                     pass
             else:  
                 self.send_message(caption)  
+                # Keep the files for debugging if send fails
+                print(f"[⚠️] Account {self.account_id}: Kept files for debug: {mp3_path} and {ogg_path}")
                   
         except Exception as e:  
             print(f"[❌] Account {self.account_id}: File processing error: {e}")  
             error_text = f"❌ [{self.account_id}] Processing error for {call_info['flag']} {call_info['masked']}"  
             self.send_message(error_text)
+            # Clean up if conversion fails
+            if os.path.exists(mp3_path):
+                os.remove(mp3_path)
 
     def initialize_driver(self):
         chrome_options = Options()
@@ -377,6 +398,13 @@ class AccountManager:
         # Account specific profile
         chrome_options.add_argument(f"--user-data-dir=/tmp/chrome_account_{self.account_id}")
         
+        # Add for audio issues
+        chrome_options.add_argument("--use-fake-ui-for-media-stream")
+        chrome_options.add_argument("--use-fake-device-for-media-stream")
+        
+        # Optional: Headless mode to save resources (comment out if manual login requires visible browser)
+        # chrome_options.add_argument("--headless=new")
+        
         return webdriver.Chrome(options=chrome_options)
 
     def start_manual_login_process(self):
@@ -398,10 +426,14 @@ class AccountManager:
                 self.driver.get(self.call_url)
                 
                 # Wait for calls page to load
-                WebDriverWait(self.driver, 20).until(
-                    EC.presence_of_element_located((By.ID, "LiveCalls"))
-                )
-                print(f"[✅] Account {self.account_id}: Active Calls page loaded")
+                try:
+                    WebDriverWait(self.driver, 30).until(
+                        EC.presence_of_element_located((By.ID, "LiveCalls"))
+                    )
+                    print(f"[✅] Account {self.account_id}: Active Calls page loaded")
+                except:
+                    print(f"[⚠️] Account {self.account_id}: Calls page load timeout, but continuing...")
+                
                 print(f"[🎯] Account {self.account_id}: Monitoring started...")
                 return True
             else:
@@ -438,14 +470,14 @@ class AccountManager:
                 break
             except Exception as e:
                 error_count += 1
-                print(f"[❌] Account {self.account_id}: Main loop error: {e}")
-                time.sleep(5)
+                print(f"[❌] Account {self.account_id}: Main loop error ({error_count}/{config.MAX_ERRORS}): {e}")
+                time.sleep(10)  # Increased delay on error
 
 
 class SequentialLoginManager:
     def __init__(self):
         self.accounts = []
-        self.login_delay = 300  # 300 seconds delay between account logins
+        self.login_delay = 60  # Reduced to 60 seconds as requested
         
     def add_account(self, account_id, login_url, call_url):
         account = AccountManager(account_id, login_url, call_url)
@@ -453,7 +485,7 @@ class SequentialLoginManager:
         return account
     
     def start_sequential_login(self):
-        """Start sequential login process with 300 seconds delay between accounts"""
+        """Start sequential login process with 60 seconds delay between accounts"""
         print(f"[🎮] Starting sequential login for {len(self.accounts)} accounts...")
         print(f"[⏰] Delay between accounts: {self.login_delay} seconds")
         
@@ -462,7 +494,7 @@ class SequentialLoginManager:
         for i, account in enumerate(self.accounts):
             print(f"\n{'='*50}")
             print(f"[🚀] Starting Account {account.account_id} ({i+1}/{len(self.accounts)})")
-            print(f"[⏰] Next account will start in {self.login_delay} seconds")
+            print(f"[⏰] Next account will start in {self.login_delay} seconds after this one")
             print(f"{'='*50}")
             
             # Start login process for current account
@@ -487,7 +519,8 @@ class SequentialLoginManager:
                 
                 # Countdown timer
                 for remaining in range(self.login_delay, 0, -10):
-                    print(f"[⏰] Next account in {remaining} seconds...")
+                    if remaining > 0:
+                        print(f"[⏰] Next account in {remaining} seconds...")
                     time.sleep(10)
                 
                 print(f"[🚀] Starting next account...")
@@ -504,6 +537,8 @@ class SequentialLoginManager:
                 if not alive_threads:
                     print("[ℹ️] All monitoring threads have stopped")
                     break
+                # Optional: Print status
+                print(f"[ℹ️] Active monitoring threads: {len(alive_threads)}")
         except KeyboardInterrupt:
             print("\n[🛑] Sequential login manager stopped by user")
 
