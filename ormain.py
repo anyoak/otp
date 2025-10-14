@@ -63,12 +63,18 @@ def delete_message(msg_id):
 
 def send_voice_with_caption(voice_path, caption):
     try:
+        if os.path.getsize(voice_path) < 1000:  # Check for empty/small file
+            raise ValueError("File too small or empty")
         url = f"https://api.telegram.org/bot{config.BOT_TOKEN}/sendVoice"
         with open(voice_path, "rb") as voice:
-            payload = {"chat_id": config.CHAT_ID, "caption": caption, "parse_mode": "Markdown"}
+            payload = {"chat_id": config.CHAT_ID, "caption": caption, "parse_mode": "HTML"}
             files = {"voice": voice}
             response = requests.post(url, data=payload, files=files, timeout=60)
-            return response.status_code == 200
+            time.sleep(2)  # Add delay to avoid rate limiting
+            if response.status_code == 200:
+                return True
+            else:
+                print(f"[DEBUG] Telegram response: {response.status_code} - {response.text}")
     except Exception as e:
         print(f"[❌] Failed to send voice: {e}")
     return False
@@ -95,9 +101,8 @@ def simulate_play_button(driver, did_number, call_uuid):
 
 def download_recording(driver, did_number, call_uuid, file_path):
     try:
-        # Simulate play first
         simulate_play_button(driver, did_number, call_uuid)
-        time.sleep(2)
+        time.sleep(5)  # Increased wait time
         
         recording_url = construct_recording_url(did_number, call_uuid)
         session = get_authenticated_session(driver)
@@ -107,21 +112,18 @@ def download_recording(driver, did_number, call_uuid, file_path):
             'Accept': 'audio/mpeg, audio/*'
         }
         
-        response = session.get(recording_url, headers=headers, timeout=30, stream=True)
-        
-        if response.status_code == 200:
-            with open(file_path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-            
-            file_size = os.path.getsize(file_path)
-            if file_size > 1000:
+        for attempt in range(3):  # Retry up to 3 times
+            response = session.get(recording_url, headers=headers, timeout=30, stream=True)
+            print(f"[DEBUG] Attempt {attempt+1} - Response status: {response.status_code}, Content-Length: {response.headers.get('Content-Length', '0')}")
+            if response.status_code == 200 and int(response.headers.get('Content-Length', 0)) > 1000:
+                with open(file_path, "wb") as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                file_size = os.path.getsize(file_path)
                 print(f"[✅] Recording downloaded: {file_size} bytes")
                 return True
-            else:
-                os.remove(file_path)
-                return False
+            time.sleep(5)  # Wait between retries
         return False
         
     except Exception as e:
@@ -166,7 +168,7 @@ def extract_calls(driver):
                     country_name, flag = detect_country(did_number)
                     masked = mask_number(did_number)
                     
-                    alert_text = f"📞 **New Call Alert!**\n🔗 **Location:** {country_name} {flag}\n✨ **DID:** `{masked}`\n📋 **Original:** `{did_text}`\n\n☎️ **Recording in progress...**"
+                    alert_text = f"📞 New call detected from {flag} {masked}. Waiting for it to end."
                     
                     msg_id = send_message(alert_text)
                     active_calls[row_id] = {
@@ -175,7 +177,6 @@ def extract_calls(driver):
                         "country": country_name,
                         "masked": masked,
                         "did_number": did_number,
-                        "original_text": did_text,
                         "detected_at": datetime.now(),
                         "last_seen": datetime.now()
                     }
@@ -208,7 +209,7 @@ def extract_calls(driver):
                 "last_check": datetime.now()
             }
             
-            wait_text = f"⏳ **Call Completed**\n📞 **Number:** `{call_info['masked']}`\n🌍 **Country:** {call_info['country']} {call_info['flag']}\n🕒 **Processing recording...**"
+            wait_text = f"{call_info['flag']} {call_info['masked']} — The call record for this number is currently being processed."
             
             if call_info["msg_id"]:
                 delete_message(call_info["msg_id"])
@@ -241,6 +242,15 @@ def process_pending_recordings(driver):
             
             print(f"[🔍] Check #{call_info['checks']} for: {call_info['did_number']}")
             
+            if call_info["checks"] > 10:  # Max checks limit to prevent infinite loops
+                print("[⏰] Max checks exceeded for recording")
+                timeout_text = f"❌ Max checks exceeded for {call_info['flag']} {call_info['masked']}"
+                if call_info.get("msg_id"):
+                    delete_message(call_info["msg_id"])
+                send_message(timeout_text)
+                processed_calls.append(call_id)
+                continue
+            
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             file_path = os.path.join(config.DOWNLOAD_FOLDER, f"call_{call_info['did_number']}_{timestamp}.mp3")
             
@@ -254,7 +264,7 @@ def process_pending_recordings(driver):
             if time_since_complete > config.MAX_RECORDING_WAIT:
                 print(f"[⏰] Timeout: {call_info['did_number']}")
                 
-                timeout_text = f"❌ **Recording Timeout**\n📞 **Number:** `{call_info['masked']}`\n🌍 **Country:** {call_info['country']} {call_info['flag']}\n⏰ **Waited:** {int(time_since_complete)}s"
+                timeout_text = f"❌ Recording timeout for {call_info['flag']} {call_info['masked']}"
                 
                 if call_info.get("msg_id"):
                     delete_message(call_info["msg_id"])
@@ -274,19 +284,25 @@ def process_recording_file(call_info, file_path):
         if call_info.get("msg_id"):
             delete_message(call_info["msg_id"])
         
-        call_duration = call_info["completed_at"] - call_info["detected_at"]
-        duration_str = f"{call_duration.seconds // 60}:{call_duration.seconds % 60:02d}"
+        call_time = call_info['detected_at'].strftime('%Y-%m-%d %I:%M:%S %p')
         
-        caption = f"🎧 **Call Recording**\n\n🌍 **Country:** {call_info['country']} {call_info['flag']}\n📞 **DID:** `{call_info['masked']}`\n📋 **Original:** `{call_info['original_text']}`\n⏰ **Duration:** {duration_str}\n🆔 **Call ID:** `{call_info['did_number']}`"
+        caption = (
+            "🔥 NEW CALL RECEIVED ✨\n\n"
+            f"⏰ Time: {call_time}\n"
+            f"{call_info['flag']} Country: {call_info['country']}\n"
+            f"🚀 Number: {call_info['masked']}\n\n"
+            f"🌟 Configure by @professor_cry"
+        )
         
         if send_voice_with_caption(file_path, caption):
             print(f"[✅] Recording sent: {call_info['did_number']}")
         else:
-            send_message(caption + "\n\n❌ **Voice upload failed**")
+            # Fallback with error note
+            send_message(caption + "\n⚠️ Voice file failed to upload.")
             
     except Exception as e:
         print(f"[❌] File processing error: {e}")
-        error_text = f"❌ **Error**\n📞 **Number:** `{call_info['masked']}`\n🌍 **Country:** {call_info['country']} {call_info['flag']}\n💡 Error: {str(e)}"
+        error_text = f"❌ Processing error for {call_info['flag']} {call_info['masked']}"
         send_message(error_text)
 
 def wait_for_login(driver):
@@ -330,9 +346,24 @@ def main():
 
         error_count = 0
         last_recording_check = datetime.now()
+        last_refresh = datetime.now()  # Track last page refresh
         
         while error_count < config.MAX_ERRORS:
             try:
+                # Refresh page every 30 minutes to maintain session
+                if (datetime.now() - last_refresh).total_seconds() > 1800:
+                    driver.refresh()
+                    WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.ID, "LiveCalls")))
+                    last_refresh = datetime.now()
+                    print("[🔄] Page refreshed to maintain session")
+                
+                # Check if still logged in
+                if config.LOGIN_URL in driver.current_url:
+                    print("[⚠️] Session expired, re-logging in")
+                    if not wait_for_login(driver):
+                        break
+                    driver.get(config.CALL_URL)
+                
                 extract_calls(driver)
                 
                 current_time = datetime.now()
@@ -348,7 +379,7 @@ def main():
                 break
             except Exception as e:
                 error_count += 1
-                print(f"[❌] Main loop error: {e}")
+                print(f"[❌] Main loop error ({error_count}/{config.MAX_ERRORS}): {e}")
                 time.sleep(5)
                 
     except Exception as e:
