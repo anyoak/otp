@@ -1,310 +1,170 @@
-import time
-import re
-import requests
-import os
+import os, re, time, requests
 from datetime import datetime
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
+import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, StaleElementReferenceException
-import phonenumbers
-from phonenumbers import region_code_for_number
-import pycountry
-import config
+import phonenumbers, pycountry
+import bot_config as config
 
 active_calls = {}
 pending_recordings = {}
 os.makedirs(config.DOWNLOAD_FOLDER, exist_ok=True)
 
-
-# ==================== Utility ====================
-def country_to_flag(country_code):
-    if not country_code or len(country_code) != 2:
-        return "🏳️"
-    return "".join(chr(127397 + ord(c)) for c in country_code.upper())
-
+# ----- Utilities -----
+def country_to_flag(code):
+    return "".join(chr(127397+ord(c)) for c in code.upper()) if code else "🏳️"
 
 def detect_country(number):
     try:
-        clean_number = re.sub(r"\D", "", number)
-        if clean_number:
-            parsed = phonenumbers.parse("+" + clean_number, None)
-            region = region_code_for_number(parsed)
-            country = pycountry.countries.get(alpha_2=region)
-            if country:
-                return country.name, country_to_flag(region)
-    except:
-        pass
-    return "Unknown", "🏳️"
-
+        digits = re.sub(r"\D","",number)
+        parsed = phonenumbers.parse("+"+digits, None)
+        region = phonenumbers.region_code_for_number(parsed)
+        country = pycountry.countries.get(alpha_2=region)
+        if country: return country.name, country_to_flag(region)
+    except: pass
+    return "Unknown","🏳️"
 
 def mask_number(number):
-    digits = re.sub(r"\D", "", number)
-    if len(digits) > 6:
-        return digits[:4] + "****" + digits[-3:]
-    return number
-
+    d = re.sub(r"\D","",number)
+    return d[:4]+"****"+d[-3:] if len(d)>6 else number
 
 def send_message(text):
     try:
         url = f"https://api.telegram.org/bot{config.BOT_TOKEN}/sendMessage"
-        payload = {"chat_id": config.CHAT_ID, "text": text, "parse_mode": "HTML"}
-        res = requests.post(url, json=payload, timeout=10)
-        if res.ok:
-            return res.json().get("result", {}).get("message_id")
-    except Exception as e:
-        print(f"[❌] Failed to send message: {e}")
+        res = requests.post(url,json={"chat_id":config.CHAT_ID,"text":text,"parse_mode":"HTML"},timeout=10)
+        if res.ok: return res.json().get("result",{}).get("message_id")
+    except: pass
     return None
-
 
 def delete_message(msg_id):
     try:
         url = f"https://api.telegram.org/bot{config.BOT_TOKEN}/deleteMessage"
-        requests.post(url, data={"chat_id": config.CHAT_ID, "message_id": msg_id}, timeout=5)
-    except:
-        pass
+        requests.post(url,data={"chat_id":config.CHAT_ID,"message_id":msg_id},timeout=5)
+    except: pass
 
-
-def send_voice_with_caption(voice_path, caption):
+def send_voice(voice_path, caption):
     try:
-        if os.path.getsize(voice_path) < 1000:
-            raise ValueError("File too small or empty")
-        url = f"https://api.telegram.org/bot{config.BOT_TOKEN}/sendVoice"
-        with open(voice_path, "rb") as voice:
-            payload = {"chat_id": config.CHAT_ID, "caption": caption, "parse_mode": "HTML"}
-            files = {"voice": voice}
-            response = requests.post(url, data=payload, files=files, timeout=60)
-            time.sleep(2)
-            if response.status_code == 200:
-                return True
-            else:
-                print(f"[DEBUG] Telegram response: {response.status_code} - {response.text}")
-    except Exception as e:
-        print(f"[❌] Failed to send voice: {e}")
-    return False
+        if os.path.getsize(voice_path)<1000: return False
+        url=f"https://api.telegram.org/bot{config.BOT_TOKEN}/sendVoice"
+        with open(voice_path,"rb") as f:
+            payload={"chat_id":config.CHAT_ID,"caption":caption,"parse_mode":"HTML"}
+            files={"voice":f}
+            r=requests.post(url,data=payload,files=files,timeout=60)
+            return r.status_code==200
+    except: return False
 
-
-def get_authenticated_session(driver):
+# ----- Chrome session for downloads -----
+def get_session(driver):
+    import requests
     session = requests.Session()
-    selenium_cookies = driver.get_cookies()
-    for cookie in selenium_cookies:
-        session.cookies.set(cookie['name'], cookie['value'])
+    for c in driver.get_cookies(): session.cookies.set(c['name'],c['value'])
     return session
 
+def construct_url(did,uuid):
+    return f"https://www.orangecarrier.com/live/calls/sound?did={did}&uuid={uuid}"
 
-# ==================== Recording & Calls ====================
-def construct_recording_url(did_number, call_uuid):
-    return f"https://www.orangecarrier.com/live/calls/sound?did={did_number}&uuid={call_uuid}"
-
-
-def simulate_play_button(driver, did_number, call_uuid):
+def download_recording(driver,did,uuid,file_path):
     try:
-        script = f'window.Play("{did_number}", "{call_uuid}"); return "Play executed";'
-        driver.execute_script(script)
-        print(f"[▶️] Play button simulated: {did_number}")
-        return True
-    except Exception as e:
-        print(f"[❌] Play simulation failed: {e}")
-        return False
-
-
-def download_recording(driver, did_number, call_uuid, file_path):
-    try:
-        simulate_play_button(driver, did_number, call_uuid)
-        time.sleep(5)
-        recording_url = construct_recording_url(did_number, call_uuid)
-        session = get_authenticated_session(driver)
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-            'Referer': config.CALL_URL,
-            'Accept': 'audio/mpeg, audio/*'
-        }
-
-        for attempt in range(3):
-            response = session.get(recording_url, headers=headers, timeout=30, stream=True)
-            print(f"[DEBUG] Attempt {attempt+1} - Response: {response.status_code}")
-            if response.status_code == 200 and int(response.headers.get('Content-Length', 0)) > 1000:
-                with open(file_path, "wb") as f:
-                    for chunk in response.iter_content(8192):
-                        f.write(chunk)
-                print(f"[✅] Recording downloaded: {file_path}")
+        session=get_session(driver)
+        headers={'User-Agent':'Mozilla/5.0','Referer':config.CALL_URL,'Accept':'audio/mpeg'}
+        for attempt in range(config.MAX_RETRIES):
+            r=session.get(construct_url(did,uuid),headers=headers,timeout=30,stream=True)
+            if r.status_code==200 and int(r.headers.get('Content-Length',0))>1000:
+                with open(file_path,"wb") as f:
+                    for chunk in r.iter_content(8192): f.write(chunk)
                 return True
-            time.sleep(5)
+            time.sleep(3)
         return False
+    except: return False
 
-    except Exception as e:
-        print(f"[❌] Download failed: {e}")
-        if os.path.exists(file_path):
-            os.remove(file_path)
-        return False
-
-
-# ==================== Core Logic ====================
+# ----- Core -----
 def extract_calls(driver):
-    global active_calls, pending_recordings
-
+    global active_calls,pending_recordings
     try:
-        calls_table = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.ID, "LiveCalls"))
-        )
-
-        rows = calls_table.find_elements(By.TAG_NAME, "tr")
-        current_call_ids = set()
-
-        for row in rows:
+        table=WebDriverWait(driver,10).until(EC.presence_of_element_located((By.ID,"LiveCalls")))
+        rows=table.find_elements(By.TAG_NAME,"tr")
+        current_ids=set()
+        for r in rows:
             try:
-                row_id = row.get_attribute('id')
-                if not row_id:
-                    continue
-
-                cells = row.find_elements(By.TAG_NAME, "td")
-                if len(cells) < 5:
-                    continue
-
-                did_element = cells[1]
-                did_text = did_element.text.strip()
-                did_number = re.sub(r"\D", "", did_text)
-                if not did_number:
-                    continue
-
-                current_call_ids.add(row_id)
-
+                row_id=r.get_attribute("id")
+                if not row_id: continue
+                cells=r.find_elements(By.TAG_NAME,"td")
+                if len(cells)<5: continue
+                number=re.sub(r"\D","",cells[1].text.strip())
+                if not number: continue
+                current_ids.add(row_id)
                 if row_id not in active_calls:
-                    print(f"[📞] New call: {did_number}")
-                    country_name, flag = detect_country(did_number)
-                    masked = mask_number(did_number)
-                    alert_text = f"📞 New call from {flag} {masked}"
-                    msg_id = send_message(alert_text)
-                    active_calls[row_id] = {
-                        "msg_id": msg_id,
-                        "flag": flag,
-                        "country": country_name,
-                        "masked": masked,
-                        "did_number": did_number,
-                        "detected_at": datetime.now(),
-                        "last_seen": datetime.now()
-                    }
-                else:
-                    active_calls[row_id]["last_seen"] = datetime.now()
-
-            except StaleElementReferenceException:
-                continue
-            except Exception as e:
-                print(f"[❌] Row error: {e}")
-                continue
-
-        current_time = datetime.now()
-        completed_calls = []
-
-        for call_id, call_info in list(active_calls.items()):
-            if (call_id not in current_call_ids) or ((current_time - call_info["last_seen"]).total_seconds() > 15):
-                if call_id not in pending_recordings:
-                    completed_calls.append(call_id)
-
-        for call_id in completed_calls:
-            call_info = active_calls[call_id]
-            pending_recordings[call_id] = {
-                **call_info,
-                "completed_at": datetime.now(),
-                "checks": 0,
-                "last_check": datetime.now()
-            }
-            if call_info["msg_id"]:
-                delete_message(call_info["msg_id"])
-            send_message(f"{call_info['flag']} {call_info['masked']} — Recording processing...")
-            del active_calls[call_id]
-
+                    country,flag=detect_country(number)
+                    masked=mask_number(number)
+                    msg_id=send_message(f"📞 New call from {flag} {masked}")
+                    active_calls[row_id]={"msg_id":msg_id,"flag":flag,"country":country,"masked":masked,"did_number":number,"detected_at":datetime.now(),"last_seen":datetime.now()}
+                else: active_calls[row_id]["last_seen"]=datetime.now()
+            except StaleElementReferenceException: continue
+        now=datetime.now()
+        for cid,info in list(active_calls.items()):
+            if cid not in current_ids or (now-info["last_seen"]).total_seconds()>15:
+                pending_recordings[cid]={**info,"completed_at":now,"checks":0,"last_check":now}
+                if info["msg_id"]: delete_message(info["msg_id"])
+                send_message(f"{info['flag']} {info['masked']} — Recording processing...")
+                del active_calls[cid]
     except TimeoutException:
-        print("[⏱️] No active calls table found")
-    except Exception as e:
-        print(f"[❌] Extract error: {e}")
+        print("[⏱️] No active calls found")
 
-
-def process_pending_recordings(driver):
+def process_recordings(driver):
     global pending_recordings
-    current_time = datetime.now()
-    processed_calls = []
+    now=datetime.now()
+    for cid,info in list(pending_recordings.items()):
+        if (now-info["last_check"]).total_seconds()<config.RECORDING_RETRY_DELAY: continue
+        info["checks"]+=1
+        info["last_check"]=now
+        file_path=os.path.join(config.DOWNLOAD_FOLDER,f"call_{info['did_number']}_{now.strftime('%Y%m%d_%H%M%S')}.mp3")
+        if download_recording(driver,info['did_number'],cid,file_path):
+            caption=f"```🔥 NEW CALL ARRIVED 🔥```\n⏰ {info['detected_at'].strftime('%Y-%m-%d %I:%M:%S %p')}\n{info['flag']} Country: {info['country']}\n📞 Number: {info['masked']}\n```✨ Configure by professor_cry```"
+            if send_voice(file_path,caption):
+                print(f"[✅] Sent: {file_path}")
+            pending_recordings.pop(cid)
+        elif info["checks"]>config.MAX_RETRIES:
+            send_message(f"❌ Recording not available for {info['flag']} {info['masked']}")
+            pending_recordings.pop(cid)
 
-    for call_id, call_info in list(pending_recordings.items()):
-        try:
-            if (current_time - call_info["last_check"]).total_seconds() < config.RECORDING_RETRY_DELAY:
-                continue
-
-            call_info["checks"] += 1
-            call_info["last_check"] = current_time
-
-            print(f"[🔍] Checking recording for: {call_info['did_number']}")
-
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            file_path = os.path.join(config.DOWNLOAD_FOLDER, f"call_{call_info['did_number']}_{timestamp}.mp3")
-
-            if download_recording(driver, call_info['did_number'], call_id, file_path):
-                process_recording_file(call_info, file_path)
-                processed_calls.append(call_id)
-            elif call_info["checks"] > 10:
-                send_message(f"❌ Recording not available for {call_info['flag']} {call_info['masked']}")
-                processed_calls.append(call_id)
-
-        except Exception as e:
-            print(f"[❌] Processing error: {e}")
-
-    for cid in processed_calls:
-        pending_recordings.pop(cid, None)
-
-
-def process_recording_file(call_info, file_path):
+# ----- Browser -----
+def wait_login(driver):
+    print("➡️ Login manually...")
     try:
-        if call_info.get("msg_id"):
-            delete_message(call_info["msg_id"])
-
-        call_time = call_info['detected_at'].strftime('%Y-%m-%d %I:%M:%S %p')
-        caption = (
-            f"🔥 NEW CALL CAPTURED 🔥\n\n"
-            f"⏰ Time: {call_time}\n"
-            f"{call_info['flag']} Country: {call_info['country']}\n"
-            f"📞 Number: {call_info['masked']}\n\n"
-            f"✨ Configure by professor_cry"
-        )
-
-        if send_voice_with_caption(file_path, caption):
-            print(f"[✅] Recording sent: {file_path}")
-        else:
-            send_message(f"{caption}\n⚠️ Voice upload failed.")
-
-    except Exception as e:
-        print(f"[❌] File processing error: {e}")
-
-
-# ==================== Browser ====================
-def wait_for_login(driver):
-    print(f"🔐 Open login page: {config.LOGIN_URL}")
-    print("➡️ Please log in manually in the Chrome window...")
-    try:
-        WebDriverWait(driver, 600).until(
-            lambda d: d.current_url.startswith(config.BASE_URL) and not d.current_url.startswith(config.LOGIN_URL)
-        )
-        print("✅ Login successful!")
+        WebDriverWait(driver,600).until(lambda d: not d.current_url.startswith(config.LOGIN_URL))
         return True
-    except TimeoutException:
-        print("[❌] Login timeout")
-        return False
+    except TimeoutException: return False
 
-
-def initialize_driver():
-    options = Options()
-    options.add_argument("--headless=new")
+def init_driver():
+    options=uc.ChromeOptions()
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-gpu")
     options.add_argument("--disable-dev-shm-usage")
-    driver = webdriver.Chrome(options=options)
-    return driver
+    options.add_argument("--disable-notifications")
+    return uc.Chrome(options=options)
 
-
-# ==================== Main ====================
+# ----- Main -----
 def main():
-    driver = None
+    driver=None
     try:
-        driver = initialize_driver()
-        driver
+        driver=init_driver()
+        driver.get(config.LOGIN_URL)
+        if not wait_login(driver): return
+        driver.get(config.CALL_URL)
+        WebDriverWait(driver,15).until(EC.presence_of_element_located((By.ID,"LiveCalls")))
+        print("[*] Monitoring started...")
+        last_check=datetime.now()
+        while True:
+            extract_calls(driver)
+            if (datetime.now()-last_check).total_seconds()>=config.CHECK_INTERVAL:
+                process_recordings(driver)
+                last_check=datetime.now()
+            time.sleep(config.CHECK_INTERVAL)
+    except Exception as e: print(f"[💥] Fatal error: {e}")
+    finally: 
+        if driver: driver.quit()
+        print("[*] Monitoring stopped")
+
+if __name__=="__main__": main()
