@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
-# firefox_monitor.py
-# Firefox-based Orangecarrier monitor with proxy-auth (using selenium-wire)
-# No distutils required.
+# main.py - Orangecarrier monitor (Firefox, no selenium-wire)
+# Features:
+# - Firefox browser (real) open
+# - Proxy support via Firefox prefs (basic; auth popup may be manual)
+# - Cookie save/load (cookies.pkl)
+# - Call detection -> pending -> download recording (requests session from cookies)
+# - Telegram messaging (send/edit/delete/sendVoice)
+# - Animation dots for pending messages
 
 import os
-import time
 import re
+import time
+import json
 import pickle
 import threading
+import requests
 from datetime import datetime
 from pathlib import Path
 
-import requests
-from seleniumwire import webdriver  # selenium-wire webdriver wraps selenium and supports proxy auth
+from selenium import webdriver
 from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.firefox.service import Service as FirefoxService
 from selenium.webdriver.common.by import By
@@ -26,15 +32,14 @@ import pycountry
 
 import config
 
-# ---------------- state & folders ----------------
+# ---------- globals ----------
 Path(config.DOWNLOAD_FOLDER).mkdir(parents=True, exist_ok=True)
-# Use a Firefox-specific cookie file by default
-COOKIES_PATH = getattr(config, "COOKIES_FILE", "ff_cookies.pkl")
+COOKIE_PATH = getattr(config, "COOKIES_FILE", "cookies.pkl")
 
-active_calls = {}
-pending_recordings = {}
+active_calls = {}          # call_id -> info
+pending_recordings = {}    # call_id -> info
 
-# ---------------- helpers (same style) ----------------
+# ---------- utilities ----------
 def country_to_flag(country_code):
     if not country_code or len(country_code) != 2:
         return "🏳️"
@@ -42,10 +47,10 @@ def country_to_flag(country_code):
 
 def detect_country(number):
     try:
-        clean_number = re.sub(r"\D", "", number)
-        if not clean_number:
+        clean = re.sub(r"\D", "", number)
+        if not clean:
             return "Unknown", "🏳️"
-        parsed = phonenumbers.parse("+" + clean_number, None)
+        parsed = phonenumbers.parse("+" + clean, None)
         region = region_code_for_number(parsed)
         if not region:
             return "Unknown", "🏳️"
@@ -62,7 +67,7 @@ def mask_number(number):
         return digits[:4] + "****" + digits[-3:]
     return number
 
-# ---------------- Telegram helpers ----------------
+# ---------- Telegram helpers ----------
 def send_message(text):
     try:
         url = f"https://api.telegram.org/bot{config.BOT_TOKEN}/sendMessage"
@@ -70,6 +75,8 @@ def send_message(text):
         res = requests.post(url, json=payload, timeout=getattr(config, "REQUEST_TIMEOUT", 30))
         if res.ok:
             return res.json().get("result", {}).get("message_id")
+        else:
+            print(f"[Telegram send_message] HTTP {res.status_code} - {res.text}")
     except Exception as e:
         print(f"[❌] Failed to send message: {e}")
     return None
@@ -80,12 +87,14 @@ def edit_message_text(msg_id, new_text):
         payload = {"chat_id": config.CHAT_ID, "message_id": msg_id, "text": new_text, "parse_mode": "Markdown"}
         requests.post(url, json=payload, timeout=getattr(config, "REQUEST_TIMEOUT", 30))
     except Exception as e:
-        print(f"[❌] edit_message_text failed: {e}")
+        # non-fatal
+        # print(f"[❌] edit_message_text failed: {e}")
+        pass
 
 def delete_message(msg_id):
     try:
         url = f"https://api.telegram.org/bot{config.BOT_TOKEN}/deleteMessage"
-        requests.post(url, data={"chat_id": config.CHAT_ID, "message_id": msg_id}, timeout=getattr(config, "REQUEST_TIMEOUT", 30))
+        requests.post(url, data={"chat_id": config.CHAT_ID, "message_id": msg_id}, timeout=5)
     except Exception:
         pass
 
@@ -97,39 +106,39 @@ def send_voice_with_caption(voice_path, caption):
         with open(voice_path, "rb") as voice:
             payload = {"chat_id": config.CHAT_ID, "caption": caption, "parse_mode": "HTML"}
             files = {"voice": voice}
-            response = requests.post(url, data=payload, files=files, timeout=getattr(config, "REQUEST_TIMEOUT", 30))
+            response = requests.post(url, data=payload, files=files, timeout=getattr(config, "REQUEST_TIMEOUT", 60))
             time.sleep(1.5)
             if response.status_code == 200:
                 return True
             else:
-                print(f"[DEBUG] Telegram response: {response.status_code} - {response.text}")
+                print(f"[Telegram sendVoice] HTTP {response.status_code} - {response.text}")
     except Exception as e:
         print(f"[❌] Failed to send voice: {e}")
     return False
 
-# ---------------- cookies/session ----------------
-def save_cookies(driver, path=COOKIES_PATH):
+# ---------- cookie/session helpers ----------
+def save_cookies(driver, path=COOKIE_PATH):
     try:
         cookies = driver.get_cookies()
         with open(path, "wb") as f:
             pickle.dump(cookies, f)
-        print(f"[+] Cookies saved to {path} ({len(cookies)} cookies).")
+        print(f"[✅] Cookies saved to {path} ({len(cookies)} cookies).")
     except Exception as e:
-        print("[!] Failed to save cookies:", e)
+        print(f"[❌] Failed to save cookies: {e}")
 
-def load_cookies(driver, base_url=None, path=COOKIES_PATH):
+def load_cookies(driver, base_url=None, path=COOKIE_PATH):
     if not os.path.exists(path):
-        print("[i] No cookie file found at", path)
+        print("[i] No cookie file to load.")
         return False
     try:
-        base_url = base_url or config.BASE_URL
-        driver.get(base_url)
+        base = base_url or config.BASE_URL
+        driver.get(base)
         time.sleep(1)
         with open(path, "rb") as f:
             cookies = pickle.load(f)
         added = 0
         for c in cookies:
-            cookie = {k: c.get(k) for k in ("name", "value", "path", "domain", "secure", "httpOnly", "expiry") if c.get(k) is not None}
+            cookie = {k: c.get(k) for k in ("name","value","path","domain","secure","httpOnly","expiry") if c.get(k) is not None}
             try:
                 driver.add_cookie(cookie)
                 added += 1
@@ -139,96 +148,97 @@ def load_cookies(driver, base_url=None, path=COOKIES_PATH):
                     added += 1
                 except Exception:
                     pass
-        print(f"[+] Loaded {added} cookies from {path}.")
+        print(f"[✅] Loaded {added} cookies from {path}")
         return True
     except Exception as e:
-        print("[!] Failed to load cookies:", e)
+        print(f"[❌] Failed to load cookies: {e}")
         return False
 
 def get_authenticated_session(driver):
-    """
-    Build requests.Session from Selenium cookies for recording download.
-    """
-    session = requests.Session()
+    s = requests.Session()
     try:
-        for cookie in driver.get_cookies():
-            session.cookies.set(cookie['name'], cookie['value'], domain=cookie.get('domain'), path=cookie.get('path', '/'))
+        for c in driver.get_cookies():
+            s.cookies.set(c['name'], c['value'], domain=c.get('domain'), path=c.get('path', '/'))
     except Exception as e:
-        print("[!] get_authenticated_session error:", e)
-    return session
+        print(f"[!] get_authenticated_session error: {e}")
+    return s
 
-# ---------------- recording helpers ----------------
+# ---------- recording helpers ----------
 def construct_recording_url(did_number, call_uuid):
     return f"{config.CALL_URL.rstrip('/')}/sound?did={did_number}&uuid={call_uuid}"
 
 def simulate_play_button(driver, did_number, call_uuid):
+    # Try JS Play call first, then fallback to clicking elements
     try:
         script = f'if (window.Play) {{ window.Play("{did_number}", "{call_uuid}"); "played"; }} else {{ "no_play"; }}'
         res = driver.execute_script(script)
         if res == "played":
-            print(f"[▶️] Play invoked via JS: {did_number}")
+            print(f"[▶️] Play invoked by JS for {did_number}")
             return True
     except Exception as e:
-        print(f"[❌] Play JS exec failed: {e}")
+        # print(f"[!] JS Play exec failed: {e}")
+        pass
+
     try:
+        # fallback: search for clickable elements that include the uuid or did_number
         elems = driver.find_elements(By.XPATH, f"//*[contains(@onclick, 'Play') and (contains(@onclick, '{call_uuid}') or contains(@onclick, '{did_number}'))]")
         for el in elems:
             try:
                 el.click()
-                print(f"[▶️] Play clicked element fallback: {did_number}")
+                print(f"[▶️] Click fallback invoked for {did_number}")
                 return True
             except Exception:
                 continue
     except Exception:
         pass
-    print("[⚠️] Play not simulated")
+
     return False
 
 def download_recording(driver, did_number, call_uuid, file_path):
     try:
         simulate_play_button(driver, did_number, call_uuid)
-        time.sleep(3)
+        time.sleep(4)  # give server some time to prepare
         recording_url = construct_recording_url(did_number, call_uuid)
         session = get_authenticated_session(driver)
         headers = {
-            'User-Agent': getattr(config, "USER_AGENT", "Mozilla/5.0"),
-            'Referer': config.CALL_URL,
-            'Accept': 'audio/mpeg, audio/*'
+            "User-Agent": getattr(config, "USER_AGENT", "Mozilla/5.0"),
+            "Referer": config.CALL_URL,
+            "Accept": "audio/mpeg, audio/*"
         }
-        for attempt in range(5):
+        for attempt in range(4):
             try:
-                print(f"[DEBUG] Attempt {attempt+1} -> {recording_url}")
-                with session.get(recording_url, headers=headers, timeout=30, stream=True) as response:
-                    status = response.status_code
-                    length = int(response.headers.get('Content-Length', 0) or 0)
-                    print(f"[DEBUG] Status: {status}, Content-Length: {length}")
+                print(f"[DEBUG] Download attempt {attempt+1} -> {recording_url}")
+                with session.get(recording_url, headers=headers, timeout=getattr(config,"REQUEST_TIMEOUT",30), stream=True) as r:
+                    status = r.status_code
+                    length = int(r.headers.get("Content-Length", 0) or 0)
+                    print(f"[DEBUG] status={status}, length={length}")
                     if status == 200 and length > 1000:
-                        tmp_path = file_path + ".part"
-                        with open(tmp_path, "wb") as f:
-                            for chunk in response.iter_content(chunk_size=8192):
+                        tmp = file_path + ".part"
+                        with open(tmp, "wb") as f:
+                            for chunk in r.iter_content(chunk_size=8192):
                                 if chunk:
                                     f.write(chunk)
-                        os.replace(tmp_path, file_path)
-                        print(f"[✅] Recording downloaded: {file_path} ({os.path.getsize(file_path)} bytes)")
+                        os.replace(tmp, file_path)
+                        print(f"[✅] Recording saved: {file_path} ({os.path.getsize(file_path)} bytes)")
                         return True
             except requests.RequestException as e:
-                print(f"[❌] download attempt error: {e}")
+                print(f"[!] Download request error: {e}")
             time.sleep(4 + attempt)
         return False
     except Exception as e:
-        print(f"[❌] Download failed: {e}")
+        print(f"[❌] download_recording failure: {e}")
         if os.path.exists(file_path):
             os.remove(file_path)
         return False
 
-# ---------------- animation ----------------
+# ---------- messaging animation ----------
 def animate_message_dots(msg_id, base_text, stop_event):
     try:
         dots = 0
         direction = 1
         while not stop_event.is_set():
             suffix = "." * dots
-            new_text = f"{base_text} {suffix}" if suffix else base_text
+            new_text = base_text + " " + suffix if suffix else base_text
             try:
                 edit_message_text(msg_id, new_text)
             except Exception:
@@ -242,8 +252,13 @@ def animate_message_dots(msg_id, base_text, stop_event):
     except Exception as e:
         print(f"[❌] Animation thread error: {e}")
 
-# ---------------- extraction & processing (preserve style) ----------------
+# ---------- extract and process calls (page-specific) ----------
 def extract_calls(driver):
+    """
+    Extract rows from LiveCalls table like previous implementation.
+    This function matches previous logic: find table with ID 'LiveCalls',
+    then iterate rows and get row.id and DID number text.
+    """
     global active_calls, pending_recordings
     try:
         calls_table = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "LiveCalls")))
@@ -251,18 +266,18 @@ def extract_calls(driver):
         current_call_ids = set()
         for row in rows:
             try:
-                row_id = row.get_attribute('id')
+                row_id = row.get_attribute("id")
                 if not row_id:
                     continue
                 cells = row.find_elements(By.TAG_NAME, "td")
                 if len(cells) < 2:
                     continue
-                did_element = cells[1]
-                did_text = did_element.text.strip()
+                did_text = cells[1].text.strip()
                 did_number = re.sub(r"\D", "", did_text)
                 if not did_number:
                     continue
                 current_call_ids.add(row_id)
+
                 if row_id not in active_calls:
                     print(f"[📞] New call: {did_number}")
                     country_name, flag = detect_country(did_number)
@@ -283,31 +298,31 @@ def extract_calls(driver):
             except StaleElementReferenceException:
                 continue
             except Exception as e:
-                print(f"[❌] Row error: {e}")
+                print(f"[❌] Row parsing error: {e}")
                 continue
 
-        # detect finished
-        current_time = datetime.now()
-        completed_calls = []
-        for call_id, call_info in list(active_calls.items()):
-            if (call_id not in current_call_ids) or ((current_time - call_info["last_seen"]).total_seconds() > 15):
+        # find completed calls
+        completed = []
+        now = datetime.now()
+        for call_id, info in list(active_calls.items()):
+            if (call_id not in current_call_ids) or ((now - info["last_seen"]).total_seconds() > 15):
                 if call_id not in pending_recordings:
-                    print(f"[✅] Call completed: {call_info['did_number']}")
-                    completed_calls.append(call_id)
+                    print(f"[✅] Call completed: {info['did_number']}")
+                    completed.append(call_id)
 
-        for call_id in completed_calls:
-            call_info = active_calls[call_id]
+        for call_id in completed:
+            info = active_calls[call_id]
             pending_recordings[call_id] = {
-                **call_info,
+                **info,
                 "completed_at": datetime.now(),
                 "checks": 0,
                 "last_check": datetime.now(),
                 "anim_stop": threading.Event(),
                 "anim_thread": None
             }
-            wait_text = f"{call_info['flag']} {call_info['masked']} — The call record for this number is currently being processed."
-            if call_info["msg_id"]:
-                delete_message(call_info["msg_id"])
+            wait_text = f"{info['flag']} {info['masked']} — The call record for this number is currently being processed."
+            if info.get("msg_id"):
+                delete_message(info["msg_id"])
             new_msg_id = send_message(wait_text)
             if new_msg_id:
                 pending_recordings[call_id]["msg_id"] = new_msg_id
@@ -317,68 +332,77 @@ def extract_calls(driver):
             del active_calls[call_id]
 
     except TimeoutException:
-        print("[⏱️] No active calls table")
+        # no table found
+        # print("[⏱️] LiveCalls table not present")
+        pass
     except Exception as e:
-        print(f"[❌] Extract error: {e}")
+        print(f"[❌] extract_calls error: {e}")
 
+# ---------- process pending recordings ----------
 def process_pending_recordings(driver):
     global pending_recordings
-    current_time = datetime.now()
-    processed_calls = []
-    for call_id, call_info in list(pending_recordings.items()):
+    now = datetime.now()
+    processed = []
+    for call_id, info in list(pending_recordings.items()):
         try:
-            time_since_check = (current_time - call_info["last_check"]).total_seconds()
-            if time_since_check < getattr(config, "RECORDING_RETRY_DELAY", 15):
+            since = (now - info["last_check"]).total_seconds()
+            if since < getattr(config, "RECORDING_RETRY_DELAY", 15):
                 continue
-            call_info["checks"] += 1
-            call_info["last_check"] = current_time
-            print(f"[🔍] Check #{call_info['checks']} for: {call_info['did_number']}")
-            if call_info["checks"] > 10:
-                print("[⏰] Max checks exceeded for recording")
-                timeout_text = f"❌ Max checks exceeded for {call_info['flag']} {call_info['masked']}"
-                if call_info.get("anim_stop"):
-                    call_info["anim_stop"].set()
-                if call_info.get("msg_id"):
-                    try:
-                        delete_message(call_info["msg_id"])
-                    except:
-                        pass
-                send_message(timeout_text)
-                processed_calls.append(call_id)
-                continue
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            file_path = os.path.join(config.DOWNLOAD_FOLDER, f"call_{call_info['did_number']}_{timestamp}.mp3")
-            if download_recording(driver, call_info['did_number'], call_id, file_path):
-                if call_info.get("anim_stop"):
-                    call_info["anim_stop"].set()
-                process_recording_file(call_info, file_path)
-                processed_calls.append(call_id)
-            else:
-                print(f"[❌] Recording not available yet: {call_info['did_number']}")
-            time_since_complete = (current_time - call_info["completed_at"]).total_seconds()
-            if time_since_complete > getattr(config, "MAX_RECORDING_WAIT", 600):
-                print(f"[⏰] Timeout: {call_info['did_number']}")
-                timeout_text = f"❌ Recording timeout for {call_info['flag']} {call_info['masked']}"
-                if call_info.get("anim_stop"):
-                    call_info["anim_stop"].set()
-                if call_info.get("msg_id"):
-                    try:
-                        delete_message(call_info["msg_id"])
-                    except:
-                        pass
-                send_message(timeout_text)
-                processed_calls.append(call_id)
-        except Exception as e:
-            print(f"[❌] Processing error: {e}")
-    for call_id in processed_calls:
-        if call_id in pending_recordings:
-            try:
-                if pending_recordings[call_id].get("anim_stop"):
-                    pending_recordings[call_id]["anim_stop"].set()
-            except:
-                pass
-            del pending_recordings[call_id]
+            info["checks"] += 1
+            info["last_check"] = now
+            print(f"[🔍] Check #{info['checks']} for {info['did_number']}")
 
+            if info["checks"] > 10:
+                print("[⏰] Max checks exceeded")
+                timeout_text = f"❌ Max checks exceeded for {info['flag']} {info['masked']}"
+                if info.get("anim_stop"):
+                    info["anim_stop"].set()
+                if info.get("msg_id"):
+                    try:
+                        delete_message(info["msg_id"])
+                    except:
+                        pass
+                send_message(timeout_text)
+                processed.append(call_id)
+                continue
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            file_path = os.path.join(config.DOWNLOAD_FOLDER, f"call_{info['did_number']}_{timestamp}.mp3")
+
+            # attempt to download
+            if download_recording(driver, info['did_number'], call_id, file_path):
+                if info.get("anim_stop"):
+                    info["anim_stop"].set()
+                process_recording_file(info, file_path)
+                processed.append(call_id)
+            else:
+                print(f"[❌] Recording not ready yet for {info['did_number']}")
+
+            # overall timeout
+            if (now - info["completed_at"]).total_seconds() > getattr(config, "MAX_RECORDING_WAIT", 600):
+                timeout_text = f"❌ Recording timeout for {info['flag']} {info['masked']}"
+                if info.get("anim_stop"):
+                    info["anim_stop"].set()
+                if info.get("msg_id"):
+                    try:
+                        delete_message(info["msg_id"])
+                    except:
+                        pass
+                send_message(timeout_text)
+                processed.append(call_id)
+
+        except Exception as e:
+            print(f"[❌] process_pending_recordings error: {e}")
+
+    for cid in processed:
+        try:
+            if pending_recordings[cid].get("anim_stop"):
+                pending_recordings[cid]["anim_stop"].set()
+        except:
+            pass
+        pending_recordings.pop(cid, None)
+
+# ---------- process & upload ----------
 def process_recording_file(call_info, file_path):
     try:
         if call_info.get("msg_id"):
@@ -392,155 +416,146 @@ def process_recording_file(call_info, file_path):
             f"⏰ Time: {call_time}\n"
             f"{call_info['flag']} Country: {call_info['country']}\n"
             f"🚀 Number: {call_info['masked']}\n\n"
-            f"🌟 Configure by professor_cry"
+            f"🌟 Configure by @professor_cry"
         )
         if send_voice_with_caption(file_path, caption):
             print(f"[✅] Recording sent: {call_info['did_number']}")
         else:
             send_message(caption + "\n⚠️ Voice file failed to upload.")
     except Exception as e:
-        print(f"[❌] File processing error: {e}")
-        error_text = f"❌ Processing error for {call_info['flag']} {call_info['masked']}"
-        send_message(error_text)
+        print(f"[❌] process_recording_file error: {e}")
+        send_message(f"❌ Processing error for {call_info.get('flag','')} {call_info.get('masked','')}")
 
-# ---------------- login/watch helpers ----------------
+# ---------- login helper ----------
 def wait_for_login(driver, timeout=600):
-    print(f"🔐 Login page: {config.LOGIN_URL}")
-    print("➡️ Please login in browser (solve Cloudflare if required)...")
+    print(f"🔐 Open login: {config.LOGIN_URL}")
+    print("➡️ Please login manually in the opened browser (solve Cloudflare if required).")
     try:
         WebDriverWait(driver, timeout).until(
-            lambda d: d.current_url.startswith(getattr(config, "BASE_URL", d.current_url)) and not d.current_url.startswith(config.LOGIN_URL)
+            lambda d: d.current_url.startswith(config.BASE_URL) and not d.current_url.startswith(config.LOGIN_URL)
         )
-        print("✅ Login successful!")
+        print("[✅] Login detected by URL change.")
         return True
     except TimeoutException:
-        print("[❌] Login timeout")
+        print("[❌] Login timeout.")
         return False
 
-# ---------------- build Firefox driver (selenium-wire) ----------------
-def build_firefox_driver():
-    # selenium-wire proxy config
-    proxy = getattr(config, "PROXY", None)
-    seleniumwire_options = {}
-    if proxy:
-        # Accept either "http://user:pass@host:port" or "user:pass@host:port"
-        if proxy.startswith("http://") or proxy.startswith("https://"):
-            proxy_no_scheme = proxy
-        else:
-            proxy_no_scheme = "http://" + proxy
-        # Use same proxy for http and https
-        seleniumwire_options['proxy'] = {
-            'http': proxy_no_scheme,
-            'https': proxy_no_scheme,
-            'no_proxy': 'localhost,127.0.0.1'
-        }
-
-    # Firefox options
-    ff_opts = Options()
-    ff_opts.headless = getattr(config, "HEADLESS", False)
-    ff_opts.add_argument(f"--width={getattr(config,'WIDTH',1366)}")
-    ff_opts.add_argument(f"--height={getattr(config,'HEIGHT',768)}")
-    # create/use profile dir
+# ---------- initialize firefox driver ----------
+def initialize_driver():
+    options = Options()
+    options.headless = getattr(config, "HEADLESS", False)
+    options.set_preference("general.useragent.override", getattr(config, "USER_AGENT", "Mozilla/5.0"))
+    options.set_preference("dom.webnotifications.enabled", False)
+    options.set_preference("media.volume_scale", "0.0")
+    # Use profile dir so cookies and session persist
     profile_dir = getattr(config, "USER_DATA_DIR", "ff_profile")
     os.makedirs(profile_dir, exist_ok=True)
-    ff_opts.profile = os.path.abspath(profile_dir)
-    # reduce webdriver exposure
-    ff_opts.set_preference("dom.webdriver.enabled", False)
-    ff_opts.set_preference("useAutomationExtension", False)
+    options.profile = os.path.abspath(profile_dir)
 
-    # firefox binary path optional: if your firefox binary is non-standard, set config.FIREFOX_BINARY
-    firefox_binary = getattr(config, "FIREFOX_BINARY", None)
-    service = None
-    geckodriver_path = getattr(config, "GECKODRIVER_PATH", None)
-    if geckodriver_path:
-        service = FirefoxService(executable_path=geckodriver_path)
+    # Proxy prefs (basic)
+    if getattr(config, "PROXY", None):
+        m = re.match(r'^(?:http://)?(?:(.*?):(.*?)@)?([^:]+):(\d+)$', config.PROXY)
+        if m:
+            user, pwd, host, port = m.groups()
+            # set manual proxy hosts/ports
+            options.set_preference("network.proxy.type", 1)
+            options.set_preference("network.proxy.http", host)
+            options.set_preference("network.proxy.http_port", int(port))
+            options.set_preference("network.proxy.ssl", host)
+            options.set_preference("network.proxy.ssl_port", int(port))
+            options.set_preference("network.proxy.no_proxies_on", "")
+            # Note: If user/pwd present, Firefox will prompt an auth popup on first request.
+            # You must manually enter credentials the first time OR pre-inject an authenticated profile.
+        else:
+            print("[⚠️] PROXY format not recognized; skipping proxy prefs.")
 
-    # instantiate selenium-wire Firefox
-    if service:
-        driver = webdriver.Firefox(service=service, options=ff_opts, seleniumwire_options=seleniumwire_options)
-    else:
-        driver = webdriver.Firefox(options=ff_opts, seleniumwire_options=seleniumwire_options)
+    # If user set a GECKODRIVER_PATH in config, use it; otherwise assume in PATH
+    geckopath = getattr(config, "GECKODRIVER_PATH", None)
+    service = FirefoxService(executable_path=geckopath) if geckopath else FirefoxService()
 
-    # small anti-detect via CDP-like script
     try:
-        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
-    except Exception:
-        pass
-
+        driver = webdriver.Firefox(service=service, options=options)
+    except Exception as e:
+        # helpful message
+        print(f"[❌] Failed to start Firefox driver: {e}")
+        raise
+    driver.set_window_size(*map(int, getattr(config, "WINDOW_SIZE", "1366,768").split(",")))
     return driver
 
-# ---------------- main flow ----------------
+# ---------- main loop ----------
 def main():
     driver = None
     try:
-        driver = build_firefox_driver()
+        driver = initialize_driver()
 
-        # attempt to load cookies (if any)
+        # try load cookies
         try:
             load_cookies(driver, getattr(config, "BASE_URL", config.LOGIN_URL))
         except Exception as e:
-            print("[!] cookie load error:", e)
+            print("[!] cookie load issue:", e)
 
-        # open login page and wait for manual solve
+        # open login
         driver.get(config.LOGIN_URL)
         if not wait_for_login(driver):
-            print("[i] If login timed out, please manually login in opened browser and then press ENTER here.")
-            input("Press ENTER after manual login & Cloudflare solve...")
+            print("[i] If you logged in manually already, press ENTER to continue.")
+            input("Press ENTER to continue...")
 
-        # save cookies for next runs
+        # save cookies after login
         try:
             save_cookies(driver)
         except Exception as e:
-            print("[!] save_cookies error:", e)
+            print("[!] save cookies failed:", e)
 
-        # go to calls page
+        # go to calls page and start monitoring
         driver.get(config.CALL_URL)
-        WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.ID, "LiveCalls")))
-        print("✅ Active Calls loaded. Monitoring started...")
+        try:
+            WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.ID, "LiveCalls")))
+            print("[✅] LiveCalls loaded. Monitoring started.")
+        except TimeoutException:
+            print("[⚠️] LiveCalls table not found initially — will poll anyway.")
 
-        error_count = 0
         last_recording_check = datetime.now()
         last_refresh = datetime.now()
+        error_count = 0
 
         while error_count < getattr(config, "MAX_ERRORS", 5):
             try:
-                # periodic refresh
+                # refresh occasionally to keep session alive
                 if (datetime.now() - last_refresh).total_seconds() > 1800:
                     try:
                         driver.refresh()
                         WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.ID, "LiveCalls")))
                         last_refresh = datetime.now()
-                        print("[🔄] Page refreshed to maintain session")
+                        print("[🔄] Page refreshed")
                     except Exception as e:
                         print("[⚠️] Refresh failed:", e)
 
-                # session check
+                # check session
                 if config.LOGIN_URL in driver.current_url:
-                    print("[⚠️] Session expired, re-login required")
+                    print("[⚠️] Session expired — please re-login manually in opened browser.")
                     if not wait_for_login(driver):
                         break
                     driver.get(config.CALL_URL)
 
                 extract_calls(driver)
 
-                current_time = datetime.now()
-                if (current_time - last_recording_check).total_seconds() >= getattr(config, "RECORDING_CHECK_INTERVAL", 10):
+                # process pending recordings periodically
+                if (datetime.now() - last_recording_check).total_seconds() >= getattr(config, "RECORDING_CHECK_INTERVAL", 10):
                     process_pending_recordings(driver)
-                    last_recording_check = current_time
+                    last_recording_check = datetime.now()
 
                 error_count = 0
                 time.sleep(getattr(config, "CHECK_INTERVAL", 3))
-
             except KeyboardInterrupt:
                 print("\n[🛑] Stopped by user")
                 break
             except WebDriverException as e:
                 error_count += 1
-                print(f"[❌] WebDriver error ({error_count}/{getattr(config,'MAX_ERRORS',5)}): {e}")
+                print(f"[❌] WebDriver error ({error_count}): {e}")
                 time.sleep(5)
             except Exception as e:
                 error_count += 1
-                print(f"[❌] Main loop error ({error_count}/{getattr(config,'MAX_ERRORS',5)}): {e}")
+                print(f"[❌] Main loop error ({error_count}): {e}")
                 time.sleep(5)
 
     except Exception as e:
@@ -551,7 +566,7 @@ def main():
                 driver.quit()
         except:
             pass
-        print("[*] Monitoring stopped")
+        print("[*] Monitor stopped")
 
 if __name__ == "__main__":
     main()
