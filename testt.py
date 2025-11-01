@@ -1,13 +1,13 @@
 # firefox_test.py
-import os, time, pickle
+import os
+import time
+import pickle
 from pathlib import Path
 from selenium import webdriver
 from selenium.webdriver.firefox.options import Options
-from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
-import config
+import config  # আপনার config.py ফাইল
 
 PROFILE_DIR = "ff_profile"
 COOKIES_FILE = "ff_cookies.pkl"
@@ -16,16 +16,16 @@ Path(PROFILE_DIR).mkdir(exist_ok=True)
 
 def build_driver():
     options = Options()
-    # Do NOT enable headless for Cloudflare tests
-    # options.headless = False
-    profile = webdriver.FirefoxProfile(os.path.abspath(PROFILE_DIR))
-    # reduce detection surface
-    profile.set_preference("dom.webdriver.enabled", False)
-    profile.set_preference("useAutomationExtension", False)
-    profile.update_preferences()
+    options.headless = False  # Cloudflare জন্য headless না রাখুন
+    options.add_argument("--width=1366")
+    options.add_argument("--height=768")
+    options.set_preference("dom.webdriver.enabled", False)
+    options.set_preference("useAutomationExtension", False)
 
-    gecko_path = None  # if geckodriver in PATH, leave None
-    driver = webdriver.Firefox(firefox_profile=profile, executable_path=gecko_path, options=options)
+    # Firefox profile path
+    options.profile = os.path.abspath(PROFILE_DIR)
+
+    driver = webdriver.Firefox(options=options)  # geckodriver PATH এ থাকলে executable_path দরকার নেই
     return driver
 
 def load_cookies(driver):
@@ -65,7 +65,7 @@ def wait_for_login(driver, timeout=600):
         WebDriverWait(driver, timeout).until(
             lambda d: d.current_url.startswith(config.BASE_URL) and not d.current_url.startswith(config.LOGIN_URL)
         )
-        print("[+] Login successful (detected URL change).")
+        print("[+] Login successful (URL change detected).")
         return True
     except TimeoutException:
         print("[!] Login wait timed out.")
@@ -79,7 +79,7 @@ def main():
         print("[i] Browser opened. Solve Cloudflare/login manually if needed.")
         input("Press ENTER after you finish manual login (or after Cloudflare is solved)...")
         save_cookies(driver)
-        # quick verification
+        # Quick verification
         driver.get(config.CALL_URL)
         time.sleep(3)
         print("[i] You can inspect page manually. Current URL:", driver.current_url)
