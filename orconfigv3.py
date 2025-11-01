@@ -21,7 +21,7 @@ RECORDING_CHECK_INTERVAL = 10               # seconds between processing pending
 MAX_RECORDING_WAIT = 600                    # seconds to wait max for a recording before timing out
 
 # ---------------- Browser / Cookie Settings ----------------
-USER_DATA_DIR = "chrome_profile"            # Chrome profile folder to persist session (recommended)
+USER_DATA_DIR = "ff_profile"            # Chrome profile folder to persist session (recommended)
 COOKIES_FILE = "cookies.pkl"                # path where cookies will be saved/loaded
 HEADLESS = False                            # set True only if you know Cloudflare won't block headless
 WINDOW_SIZE = "1366,768"
