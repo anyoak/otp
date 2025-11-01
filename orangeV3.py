@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
-# main.py — Orangecarrier monitor (no distutils required)
+# firefox_monitor.py
+# Firefox-based Orangecarrier monitor with proxy-auth (using selenium-wire)
+# No distutils required.
+
 import os
 import time
 import re
 import pickle
-import tempfile
 import threading
-import shutil
 from datetime import datetime
 from pathlib import Path
 
 import requests
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service as ChromeService
+from seleniumwire import webdriver  # selenium-wire webdriver wraps selenium and supports proxy auth
+from selenium.webdriver.firefox.options import Options
+from selenium.webdriver.firefox.service import Service as FirefoxService
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -26,12 +28,13 @@ import config
 
 # ---------------- state & folders ----------------
 Path(config.DOWNLOAD_FOLDER).mkdir(parents=True, exist_ok=True)
-COOKIE_PATH = getattr(config, "COOKIES_FILE", "cookies.pkl")
+# Use a Firefox-specific cookie file by default
+COOKIES_PATH = getattr(config, "COOKIES_FILE", "ff_cookies.pkl")
 
 active_calls = {}
 pending_recordings = {}
 
-# ---------------- helpers ----------------
+# ---------------- helpers (same style) ----------------
 def country_to_flag(country_code):
     if not country_code or len(country_code) != 2:
         return "🏳️"
@@ -59,7 +62,7 @@ def mask_number(number):
         return digits[:4] + "****" + digits[-3:]
     return number
 
-# ---------------- Telegram helpers (style preserved) ----------------
+# ---------------- Telegram helpers ----------------
 def send_message(text):
     try:
         url = f"https://api.telegram.org/bot{config.BOT_TOKEN}/sendMessage"
@@ -105,7 +108,7 @@ def send_voice_with_caption(voice_path, caption):
     return False
 
 # ---------------- cookies/session ----------------
-def save_cookies(driver, path=COOKIE_PATH):
+def save_cookies(driver, path=COOKIES_PATH):
     try:
         cookies = driver.get_cookies()
         with open(path, "wb") as f:
@@ -114,7 +117,7 @@ def save_cookies(driver, path=COOKIE_PATH):
     except Exception as e:
         print("[!] Failed to save cookies:", e)
 
-def load_cookies(driver, base_url=None, path=COOKIE_PATH):
+def load_cookies(driver, base_url=None, path=COOKIES_PATH):
     if not os.path.exists(path):
         print("[i] No cookie file found at", path)
         return False
@@ -126,7 +129,7 @@ def load_cookies(driver, base_url=None, path=COOKIE_PATH):
             cookies = pickle.load(f)
         added = 0
         for c in cookies:
-            cookie = {k: c.get(k) for k in ("name", "value", "path", "domain", "secure", "httpOnly") if c.get(k) is not None}
+            cookie = {k: c.get(k) for k in ("name", "value", "path", "domain", "secure", "httpOnly", "expiry") if c.get(k) is not None}
             try:
                 driver.add_cookie(cookie)
                 added += 1
@@ -143,10 +146,13 @@ def load_cookies(driver, base_url=None, path=COOKIE_PATH):
         return False
 
 def get_authenticated_session(driver):
+    """
+    Build requests.Session from Selenium cookies for recording download.
+    """
     session = requests.Session()
     try:
         for cookie in driver.get_cookies():
-            session.cookies.set(cookie['name'], cookie['value'], domain=cookie.get('domain'), path=cookie.get('path','/'))
+            session.cookies.set(cookie['name'], cookie['value'], domain=cookie.get('domain'), path=cookie.get('path', '/'))
     except Exception as e:
         print("[!] get_authenticated_session error:", e)
     return session
@@ -164,7 +170,6 @@ def simulate_play_button(driver, did_number, call_uuid):
             return True
     except Exception as e:
         print(f"[❌] Play JS exec failed: {e}")
-
     try:
         elems = driver.find_elements(By.XPATH, f"//*[contains(@onclick, 'Play') and (contains(@onclick, '{call_uuid}') or contains(@onclick, '{did_number}'))]")
         for el in elems:
@@ -176,7 +181,6 @@ def simulate_play_button(driver, did_number, call_uuid):
                 continue
     except Exception:
         pass
-
     print("[⚠️] Play not simulated")
     return False
 
@@ -217,7 +221,7 @@ def download_recording(driver, did_number, call_uuid, file_path):
             os.remove(file_path)
         return False
 
-# ---------------- animation thread ----------------
+# ---------------- animation ----------------
 def animate_message_dots(msg_id, base_text, stop_event):
     try:
         dots = 0
@@ -238,14 +242,13 @@ def animate_message_dots(msg_id, base_text, stop_event):
     except Exception as e:
         print(f"[❌] Animation thread error: {e}")
 
-# ---------------- extraction & processing ----------------
+# ---------------- extraction & processing (preserve style) ----------------
 def extract_calls(driver):
     global active_calls, pending_recordings
     try:
         calls_table = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "LiveCalls")))
         rows = calls_table.find_elements(By.TAG_NAME, "tr")
         current_call_ids = set()
-
         for row in rows:
             try:
                 row_id = row.get_attribute('id')
@@ -322,17 +325,14 @@ def process_pending_recordings(driver):
     global pending_recordings
     current_time = datetime.now()
     processed_calls = []
-
     for call_id, call_info in list(pending_recordings.items()):
         try:
             time_since_check = (current_time - call_info["last_check"]).total_seconds()
             if time_since_check < getattr(config, "RECORDING_RETRY_DELAY", 15):
                 continue
-
             call_info["checks"] += 1
             call_info["last_check"] = current_time
             print(f"[🔍] Check #{call_info['checks']} for: {call_info['did_number']}")
-
             if call_info["checks"] > 10:
                 print("[⏰] Max checks exceeded for recording")
                 timeout_text = f"❌ Max checks exceeded for {call_info['flag']} {call_info['masked']}"
@@ -346,10 +346,8 @@ def process_pending_recordings(driver):
                 send_message(timeout_text)
                 processed_calls.append(call_id)
                 continue
-
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             file_path = os.path.join(config.DOWNLOAD_FOLDER, f"call_{call_info['did_number']}_{timestamp}.mp3")
-
             if download_recording(driver, call_info['did_number'], call_id, file_path):
                 if call_info.get("anim_stop"):
                     call_info["anim_stop"].set()
@@ -357,7 +355,6 @@ def process_pending_recordings(driver):
                 processed_calls.append(call_id)
             else:
                 print(f"[❌] Recording not available yet: {call_info['did_number']}")
-
             time_since_complete = (current_time - call_info["completed_at"]).total_seconds()
             if time_since_complete > getattr(config, "MAX_RECORDING_WAIT", 600):
                 print(f"[⏰] Timeout: {call_info['did_number']}")
@@ -371,10 +368,8 @@ def process_pending_recordings(driver):
                         pass
                 send_message(timeout_text)
                 processed_calls.append(call_id)
-
         except Exception as e:
             print(f"[❌] Processing error: {e}")
-
     for call_id in processed_calls:
         if call_id in pending_recordings:
             try:
@@ -422,164 +417,83 @@ def wait_for_login(driver, timeout=600):
         print("[❌] Login timeout")
         return False
 
-# ---------------- Proxy auth extension helper ----------------
-def make_proxy_extension(proxy_full):
-    """
-    Build a chrome extension to handle proxy with authentication.
-    proxy_full: http://user:pass@host:port  or user:pass@host:port
-    Returns path to extension folder.
-    """
-    try:
-        if proxy_full.startswith("http://") or proxy_full.startswith("https://"):
-            without_scheme = proxy_full.split("://",1)[1]
-        else:
-            without_scheme = proxy_full
-        user_pass, hostport = without_scheme.split("@",1)
-        username, password = user_pass.split(":",1)
-        host, port = hostport.split(":",1)
-    except Exception as e:
-        print("[!] Proxy format invalid for auth extension:", e)
-        return None
-
-    ext_dir = tempfile.mkdtemp(prefix="proxy_ext_")
-    manifest = {
-        "version": "1.0.0",
-        "manifest_version": 2,
-        "name": "Chrome Proxy Auth Extension",
-        "permissions": [
-            "proxy",
-            "tabs",
-            "unlimitedStorage",
-            "storage",
-            "<all_urls>",
-            "webRequest",
-            "webRequestBlocking"
-        ],
-        "background": {"scripts": ["background.js"]},
-        "browser_action": {"default_title": "Proxy Auth"}
-    }
-    background_js = f"""
-var config = {{
-  mode: "fixed_servers",
-  rules: {{
-    singleProxy: {{
-      scheme: "http",
-      host: "{host}",
-      port: parseInt({port})
-    }},
-    bypassList: ["localhost"]
-  }}
-}};
-
-chrome.proxy.settings.set({{value: config, scope: "regular"}}, function() {{}});
-
-function callbackFn(details) {{
-    return {{
-        authCredentials: {{
-            username: "{username}",
-            password: "{password}"
-        }}
-    }};
-}}
-
-chrome.webRequest.onAuthRequired.addListener(
-    callbackFn,
-    {{urls: ["<all_urls>"]}},
-    ['blocking']
-);
-"""
-    import json
-    with open(os.path.join(ext_dir, "manifest.json"), "w") as f:
-        json.dump(manifest, f)
-    with open(os.path.join(ext_dir, "background.js"), "w") as f:
-        f.write(background_js)
-    return ext_dir
-
-# ---------------- build Chrome driver ----------------
-def build_chrome_driver():
-    options = webdriver.ChromeOptions()
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--disable-infobars")
-    options.add_argument("--disable-notifications")
-    options.add_argument("--disable-extensions")
-    options.add_argument("--start-maximized")
-    options.add_argument(f"--window-size={getattr(config,'WINDOW_SIZE','1366,768')}")
-    options.add_argument(f"--user-agent={getattr(config,'USER_AGENT','Mozilla/5.0')}")
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option('useAutomationExtension', False)
-    prefs = {"profile.default_content_setting_values.notifications": 2}
-    options.add_experimental_option("prefs", prefs)
-
-    # load profile dir
-    if getattr(config, "USER_DATA_DIR", None):
-        os.makedirs(config.USER_DATA_DIR, exist_ok=True)
-        options.add_argument(f"--user-data-dir={os.path.abspath(config.USER_DATA_DIR)}")
-
-    # Proxy handling:
-    ext_dir = None
+# ---------------- build Firefox driver (selenium-wire) ----------------
+def build_firefox_driver():
+    # selenium-wire proxy config
     proxy = getattr(config, "PROXY", None)
+    seleniumwire_options = {}
     if proxy:
-        if "@" in proxy and (":" in proxy.split("@")[0]):
-            ext_dir = make_proxy_extension(proxy)
-            if ext_dir:
-                # load extension (chrome will open with extension enabled)
-                options.add_argument(f"--load-extension={ext_dir}")
-            else:
-                options.add_argument(f"--proxy-server={proxy}")
+        # Accept either "http://user:pass@host:port" or "user:pass@host:port"
+        if proxy.startswith("http://") or proxy.startswith("https://"):
+            proxy_no_scheme = proxy
         else:
-            options.add_argument(f"--proxy-server={proxy}")
+            proxy_no_scheme = "http://" + proxy
+        # Use same proxy for http and https
+        seleniumwire_options['proxy'] = {
+            'http': proxy_no_scheme,
+            'https': proxy_no_scheme,
+            'no_proxy': 'localhost,127.0.0.1'
+        }
 
-    chromedriver_path = getattr(config, "CHROMEDRIVER_PATH", None)
-    if chromedriver_path:
-        service = ChromeService(executable_path=chromedriver_path)
+    # Firefox options
+    ff_opts = Options()
+    ff_opts.headless = getattr(config, "HEADLESS", False)
+    ff_opts.add_argument(f"--width={getattr(config,'WIDTH',1366)}")
+    ff_opts.add_argument(f"--height={getattr(config,'HEIGHT',768)}")
+    # create/use profile dir
+    profile_dir = getattr(config, "USER_DATA_DIR", "ff_profile")
+    os.makedirs(profile_dir, exist_ok=True)
+    ff_opts.profile = os.path.abspath(profile_dir)
+    # reduce webdriver exposure
+    ff_opts.set_preference("dom.webdriver.enabled", False)
+    ff_opts.set_preference("useAutomationExtension", False)
+
+    # firefox binary path optional: if your firefox binary is non-standard, set config.FIREFOX_BINARY
+    firefox_binary = getattr(config, "FIREFOX_BINARY", None)
+    service = None
+    geckodriver_path = getattr(config, "GECKODRIVER_PATH", None)
+    if geckodriver_path:
+        service = FirefoxService(executable_path=geckodriver_path)
+
+    # instantiate selenium-wire Firefox
+    if service:
+        driver = webdriver.Firefox(service=service, options=ff_opts, seleniumwire_options=seleniumwire_options)
     else:
-        service = ChromeService()  # chromedriver in PATH
+        driver = webdriver.Firefox(options=ff_opts, seleniumwire_options=seleniumwire_options)
 
-    driver = webdriver.Chrome(service=service, options=options)
-
-    # anti-detect tweaks
+    # small anti-detect via CDP-like script
     try:
-        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-            "source": """
-                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                window.navigator.chrome = { runtime: {} };
-                Object.defineProperty(navigator, 'languages', {get: () => ['en-US','en']});
-            """
-        })
+        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
     except Exception:
         pass
 
-    return driver, ext_dir
+    return driver
 
-# ---------------- main loop ----------------
+# ---------------- main flow ----------------
 def main():
     driver = None
-    ext_dir = None
     try:
-        driver, ext_dir = build_chrome_driver()
+        driver = build_firefox_driver()
 
-        # try load cookies (if available)
+        # attempt to load cookies (if any)
         try:
             load_cookies(driver, getattr(config, "BASE_URL", config.LOGIN_URL))
         except Exception as e:
             print("[!] cookie load error:", e)
 
-        # open login page and wait (manual solve)
+        # open login page and wait for manual solve
         driver.get(config.LOGIN_URL)
         if not wait_for_login(driver):
-            print("[i] If login timed out, please solve manually and press ENTER")
-            input("Press ENTER after manual login...")
+            print("[i] If login timed out, please manually login in opened browser and then press ENTER here.")
+            input("Press ENTER after manual login & Cloudflare solve...")
 
-        # save cookies
+        # save cookies for next runs
         try:
             save_cookies(driver)
         except Exception as e:
             print("[!] save_cookies error:", e)
 
-        # navigate to calls page
+        # go to calls page
         driver.get(config.CALL_URL)
         WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.ID, "LiveCalls")))
         print("✅ Active Calls loaded. Monitoring started...")
@@ -590,7 +504,7 @@ def main():
 
         while error_count < getattr(config, "MAX_ERRORS", 5):
             try:
-                # periodic refresh to maintain session
+                # periodic refresh
                 if (datetime.now() - last_refresh).total_seconds() > 1800:
                     try:
                         driver.refresh()
@@ -600,7 +514,7 @@ def main():
                     except Exception as e:
                         print("[⚠️] Refresh failed:", e)
 
-                # check session validity
+                # session check
                 if config.LOGIN_URL in driver.current_url:
                     print("[⚠️] Session expired, re-login required")
                     if not wait_for_login(driver):
@@ -635,12 +549,6 @@ def main():
         try:
             if driver:
                 driver.quit()
-        except:
-            pass
-        # cleanup extension dir
-        try:
-            if ext_dir and os.path.isdir(ext_dir):
-                shutil.rmtree(ext_dir, ignore_errors=True)
         except:
             pass
         print("[*] Monitoring stopped")
