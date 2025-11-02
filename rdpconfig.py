@@ -1,8 +1,8 @@
 # config.py
 
 # Telegram Bot Configuration
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # আপনার বট টোকেন
-CHAT_ID = "YOUR_CHAT_ID_HERE"     # আপনার চ্যাট আইডি
+BOT_TOKEN = "8522542742:AAHr7nwP7BBTfOLFBLemRhn4bDe5bySoaIc"  # আপনার বট টোকেন
+CHAT_ID = "-1002631004312"     # আপনার চ্যাট আইডি
 
 # Website URLs
 LOGIN_URL = "https://www.orangecarrier.com/live/login"
