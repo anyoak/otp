@@ -22,7 +22,7 @@ import async_timeout
 # ---------------------------
 # CONFIG
 # ---------------------------
-BOT_TOKEN = "8472314239:AAEuxP4QTgl-gCg4SUl13htj8V7ZE3LB8nc"
+BOT_TOKEN = "8472314239:AAHy-ghEb0ZW5rYLlpp24laUkAZO9nwhdGI"
 CHANNEL_USERNAME = "@mailtwist"
 HELP_CONTACT = "@professor_cry"
 DATA_DIR = "user_data"
